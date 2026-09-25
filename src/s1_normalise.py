@@ -3,13 +3,19 @@
 Usage:
   python src/s1_normalise.py     # writes work/s1/{split}_source{n}.parquet + reports/verify_stage1.json (V1.*)
 
-Deferred (need Stage 2 tables): `admin` tagging (alias list) and the learned Indian-script
+General version: no per-language tables or word lists. Any non-Latin letter is romanised
+from its Unicode character name; legal-form and stop-word weighting move to Stage 2 (learned
+from pairs / per-split rarity), so this stage drops no words.
+
+Deferred (need Stage 2 tables): `admin` tagging (alias list) and the learned script
 dictionary (gate G8). Addresses are romanised too (`उत्तर प्रदेश` -> `uttar pradesh`).
 """
 import hashlib
 import json
 import math
+import re
 import sys
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
@@ -21,64 +27,70 @@ from s0_harness import DATA, REPORTS, ROOT, read_tsv  # noqa: E402
 
 WORK = ROOT / "work/s1"
 RAW = ["entity_id", "business_name", "business_address", "country"]
-INDIC = "ऀ-෿"  # the nine Brahmic blocks, Devanagari .. Malayalam
+NONLATIN = r"[\p{L}&&\P{Latin}]"  # any letter outside the Latin script (no script list)
 # Split on spaces/punctuation only; combining marks and ZWJ/ZWNJ stay inside words (§11).
 TOKEN = r"[\p{L}\p{M}\p{N}\x{200C}\x{200D}]+"
-# House number: value + optional ordinal | fraction | bis/ter | letter suffix | slash/hyphen chain.
-NUMBER = r"\d+(?:(?:st|nd|rd|th)\b|\s+\d/\d\b|\s*(?:bis|ter|quater)\b|[a-z]\b|(?:[/-]\d+)+)?"
+# House number: value + optional fraction | bis/ter | glued letters | slash/hyphen chain.
+# Digits glued to 2-3 letters (1er, 2nd, 213th, 2eme, 40ft) are ordinals/units, not house numbers
+# (bis/ter/quater excepted); >=4 glued letters is a missing space (74SECTOR, 905NEW), so the number is kept.
+# Chosen on 130k train true pairs: ties the old rule on identical-number rate, keeps more numbers.
+NUMBER = r"\d+(?:\s+\d/\d\b|\s*(?:bis|ter|quater)\b|[a-z]{1,3}\b|(?:[/-]\d+)+)?"
+ORDINAL = r"^\d+[a-z]{2,3}$"
 ALIAS = r"\s(?:d/b/a|dba:?|f/k/a|aka|t/a|trading as|formerly known as|formerly)\s"
-DOMAIN = r"(?:^|\s)@?([a-z0-9]{4,})(?:\.(?:com|net|org|co\.in|in|co|io|biz|fr|us|info)\b|$)"
+# A web domain needs a real dot-TLD; a bare last word is not a domain (it was: 56% of S1 names got junk alts).
+DOMAIN = r"(?:^|\s)@?(?:www\.)?([a-z0-9]{4,})\.[a-z]{2,6}\b"
 # Measured on 215k train true-pair words (>=3 letters, 1 digit): the S1 word has this letter 85-93% of the time.
 LEET = {"0": "o", "1": "l", "5": "s", "6": "g", "8": "b"}
-LEGAL = {
-    "private": "private", "pvt": "private", "limited": "limited", "ltd": "limited",
-    "inc": "inc", "incorporated": "inc", "corp": "corp", "corporation": "corp", "co": "co", "company": "co",
-    "llc": "llc", "llp": "llp", "lp": "lp", "plc": "plc", "pllc": "pllc", "pc": "pc",
-    "sa": "sa", "sas": "sas", "sasu": "sas", "sarl": "sarl", "eurl": "eurl", "sci": "sci", "snc": "snc",
-}
-STOP = {"and", "the", "of"}
+_VOWEL_NAMES = {"A", "AA", "I", "II", "U", "UU", "E", "EE", "AI", "O", "OO", "AU"}
 
-# --- transliteration: one table for all Brahmic scripts (offset inside each 128-codepoint block)
-_C = "k kh g gh n ch chh j jh n t th d dh n t th d dh n n p f b bh m y r r l l l v sh sh s h".split()
-CONS = {0x15 + i: c for i, c in enumerate(_C)} | dict(zip(range(0x58, 0x60), "q kh g z r rh f y".split()))
-VOWEL = dict(zip(range(0x05, 0x15), "a a i i u u ri li a e e ai o o o au".split())) | {0x60: "ri", 0x61: "li"}
-MATRA = dict(zip(range(0x3E, 0x4D), "a i i u u ri ri a e e ai o o o au".split())) | {0x57: "au", 0x62: "li", 0x63: "li"}
-SIGN = {0x01: "n", 0x02: "n", 0x03: "h"}
-NUKTA = {0x1C: "z", 0x21: "r", 0x22: "rh", 0x15: "q", 0x2B: "f"}
-EXTRA = {(0xA00, 0x70): "n", (0xB00, 0x71): "w"} | {(0xD00, o): c for o, c in zip(range(0x7A, 0x80), "n n r l l k".split())}
+
+def _piece(name: str, key: str) -> str:
+    """'DEVANAGARI LETTER TTA' -> 'ta': last word of the name, repeated letters collapsed
+    (Unicode spells retroflex/long sounds by doubling: TTA, NNA, AA, II)."""
+    return re.sub(r"(.)\1+", r"\1", name.split(key, 1)[1].split()[-1].lower())
 
 
 @lru_cache(maxsize=None)
 def translit(word: str) -> str:
-    """Deterministic Brahmic -> Latin romanisation; inherent 'a' dropped at word end (limited, not limiteda)."""
-    out, pend, last = [], False, None
+    """Generic romanisation of any non-Latin letters from Unicode character names only.
+
+    A consonant letter carries an inherent 'a'; a following vowel sign replaces it, a virama
+    removes it, and it is dropped at word end (limited, not limiteda).
+    ponytail: abugida-shaped (every script in this data, DATA_NOTES §6). Alphabets such as
+    Greek/Cyrillic would romanise from letter *names* (alpha, zhe); add a transliteration
+    library if such scripts ever appear.
+    """
+    out, cons = [], False
     for ch in word:
-        cp = ord(ch)
-        if not 0x900 <= cp <= 0xDFF:
-            if ch not in "‌‍":
-                out.append(ch)
-            pend = False
-            continue
-        base, o = cp & ~0x7F, cp & 0x7F
-        if o in CONS:
-            out.append("a" * pend + CONS[o])
-            pend, last = True, o
-        elif (base, o) in EXTRA:  # tippi (nasal), Oriya wa, Malayalam chillu letters (no inherent vowel)
-            out.append("a" * pend + EXTRA[base, o])
-            pend = False
-        elif o in MATRA:
-            out.append(MATRA[o])
-            pend = False
-        elif o == 0x4D:  # virama
-            pend = False
-        elif o == 0x3C and pend and last in NUKTA:
-            out[-1] = out[-1][:-len(CONS[last])] + NUKTA[last]
-        elif o in VOWEL or o in SIGN:
-            out.append("a" * pend + VOWEL.get(o, SIGN.get(o, "")))
-            pend = False
-        elif 0x66 <= o <= 0x6F:
-            out.append(str(o - 0x66))
-            pend = False
+        name = unicodedata.name(ch, "")
+        if ch.isascii() or "LATIN" in name:
+            out.append(ch)
+            cons = False
+        elif unicodedata.category(ch) == "Nd":
+            out.append(str(unicodedata.digit(ch)))
+            cons = False
+        elif " LETTER " in name:
+            p = _piece(name, " LETTER ")
+            out.append(p)
+            cons = len(p) > 1 and p.endswith("a") and name.split()[-1] not in _VOWEL_NAMES
+        elif "VOWEL SIGN" in name:
+            if cons:
+                out[-1] = out[-1][:-1]
+            out.append(_piece(name, "VOWEL SIGN"))
+            cons = False
+        elif "VIRAMA" in name:
+            if cons:
+                out[-1] = out[-1][:-1]
+            cons = False
+        elif any(k in name for k in ("ANUSVARA", "CANDRABINDU", "TIPPI", "BINDI")):
+            out.append("n")
+            cons = False
+        elif "VISARGA" in name:
+            out.append("h")
+            cons = False
+        # other marks (nukta, ZWJ/ZWNJ, gemination signs) carry no letter of their own
+    if cons:
+        out[-1] = out[-1][:-1]
     return "".join(out)
 
 
@@ -115,9 +127,9 @@ def romanise(tokens: pl.Expr, table: dict[str, str]) -> pl.Expr:
     return tokens.list.eval(pl.element().replace(list(table), list(table.values())))
 
 
-def indic_table(*token_cols: pl.Series) -> dict[str, str]:
+def nonlatin_table(*token_cols: pl.Series) -> dict[str, str]:
     words = pl.concat([c.explode(empty_as_null=True) for c in token_cols]).unique().drop_nulls()
-    return {w: translit(w) for w in words.filter(words.str.contains(f"[{INDIC}]")).to_list()}
+    return {w: translit(w) for w in words.filter(words.str.contains(NONLATIN)).to_list()}
 
 
 def normalise(df: pl.DataFrame, vocab: dict[str, int]) -> pl.DataFrame:
@@ -131,7 +143,6 @@ def normalise(df: pl.DataFrame, vocab: dict[str, int]) -> pl.DataFrame:
         clean_text("business_name")
         .str.replace_all(r"\(\s*id\s*:?\s*\d+\s*\)", " ")  # (ID: 30420)
         .str.replace_all(r"\d{7,}", " ")                   # - 6215889221
-        .str.replace_all(r"\bm/s\b", " ")                  # M/s (messrs)
         .str.replace_all(r"[&+]", " and ")
         .str.replace_all("['’`]", "")
     )
@@ -139,15 +150,17 @@ def normalise(df: pl.DataFrame, vocab: dict[str, int]) -> pl.DataFrame:
     out = df.with_columns(
         _name=name.str.replace_all(ALIAS, "\x1f"),
         _addr=addr,
-        name_indic=pl.col("business_name").fill_null("").str.contains(f"[{INDIC}]"),
-        addr_indic=pl.col("business_address").fill_null("").str.contains(f"[{INDIC}]"),
+        name_nonlatin=pl.col("business_name").fill_null("").str.contains(NONLATIN),
+        addr_nonlatin=pl.col("business_address").fill_null("").str.contains(NONLATIN),
     ).with_columns(
         _ntok=tok(pl.col("_name").str.replace_all("\x1f", " ")).list.eval(deleet),
         _atok=tok(pl.col("_addr")),
         _parts=pl.col("_name").str.split("\x1f"),
         _stem=pl.col("_name").str.extract(DOMAIN, 1),
         numbers=pl.col("_addr").str.extract_all(NUMBER).list.eval(
-            pl.element().filter(~pl.element().str.contains(r"\d(?:st|nd|rd|th)$"))
+            pl.element().filter(
+                ~pl.element().str.contains(ORDINAL) | pl.element().str.contains(r"(?:bis|ter|quater)$")
+            )
         ).list.eval(pl.struct(
             v=pl.element().str.extract(r"^(\d+)").cast(pl.UInt32, strict=False),
             frac=pl.element().str.extract(r"\s(\d/\d)$"),
@@ -156,7 +169,7 @@ def normalise(df: pl.DataFrame, vocab: dict[str, int]) -> pl.DataFrame:
             bis=pl.element().str.extract(r"(bis|ter|quater)$"),
         )).list.eval(pl.element().filter(pl.element().struct.field("v").is_not_null())),
     )
-    table = indic_table(out["_ntok"], out["_atok"])
+    table = nonlatin_table(out["_ntok"], out["_atok"])
     seg = {s: segment(s, vocab) for s in out["_stem"].drop_nulls().unique().to_list()}
     out = out.with_columns(
         name_clean=pl.col("_ntok").list.join(" "),
@@ -170,16 +183,13 @@ def normalise(df: pl.DataFrame, vocab: dict[str, int]) -> pl.DataFrame:
         name_roman=pl.col("_nrom").list.join(" "),
         name_alts=pl.when(pl.col("_dom").is_null()).then(pl.col("_alts"))
         .otherwise(pl.concat_list(pl.col("_alts"), pl.col("_dom"))),
-        name_tokens=pl.col("_nrom").list.unique(maintain_order=True)
-        .list.eval(pl.element().filter(~pl.element().is_in(list(LEGAL) + list(STOP)))),
-        legal_family=pl.col("_nrom").list.eval(pl.element().replace_strict(LEGAL, default=None))
-        .list.drop_nulls().list.unique().list.sort().list.join("-")
-        .replace("", None),
+        # all words kept: legal/stop-word weighting is learned in Stage 2, not hand-listed here
+        name_tokens=pl.col("_nrom").list.unique(maintain_order=True),
         addr_clean=pl.col("_arom").list.join(" "),
         addr_tokens=pl.col("_arom").list.unique(maintain_order=True),
     )
-    return out.select(*RAW, "name_clean", "name_roman", "name_alts", "name_tokens", "legal_family",
-                      "addr_clean", "addr_tokens", "numbers", "name_indic", "addr_indic")
+    return out.select(*RAW, "name_clean", "name_roman", "name_alts", "name_tokens",
+                      "addr_clean", "addr_tokens", "numbers", "name_nonlatin", "addr_nonlatin")
 
 
 CHUNK = 1_000_000  # ponytail: fixed chunk keeps peak RAM ~6 GB on the 15 GB laptop; raise on bigger machines
@@ -197,10 +207,10 @@ def normalise_file(path: Path, vocab: dict[str, int], out_path: Path, stats: dic
         writer.write_table(table)
         if stats is not None:
             stats["raw_identical"] &= out.select(RAW).equals(part.select(RAW))
-            ind = out.filter(pl.col("name_indic"))
-            stats["indic_names"] += ind.height
-            stats["empty_roman"] += ind.filter(pl.col("name_roman").str.strip_chars() == "").height
-            stats["residual_indic_chars"] += ind.filter(pl.col("name_roman").str.contains(f"[{INDIC}]")).height
+            nl = out.filter(pl.col("name_nonlatin"))
+            stats["nonlatin_names"] += nl.height
+            stats["empty_roman"] += nl.filter(pl.col("name_roman").str.strip_chars() == "").height
+            stats["residual_nonlatin_chars"] += nl.filter(pl.col("name_roman").str.contains(NONLATIN)).height
     writer.close()
     if stats is not None:
         stats["rows"][path.name] = (raw.height, pq.ParquetFile(out_path).metadata.num_rows)
@@ -227,6 +237,14 @@ UNIT = {  # V-id: (name, address)
     "V1.7a": ("x", "0070 Main St"), "V1.7b": ("x", "44D Elm St"), "V1.7c": ("x", "204 1/2 Crawford St"),
     "V1.7d": ("x", "36 bis Rue X"), "V1.7e": ("x", "#9 KHASRA NO 123"), "V1.7f": ("x", "2151/8 Gali"),
     "V1.8": ("x", "null, N/A, <NULL>"), "V1.9": ("लिमिटेड", ""), "V1.10": ("प्राइवेट लिमिटेड", ""),
+    # new: ordinals are not house numbers (French 1er was parsed as house number 1)
+    "V1.15a": ("x", "78 BD Albert 1er, Bordeaux"), "V1.15b": ("x", "2Nd Floor 12 Park St, 213th Drive"),
+    "V1.15c": ("x", "8BIS CLOS GUSTAVE"), "V1.15d": ("x", "74SECTOR-33 DWARKA"),
+    # new: a bare last word is not a domain (junk alts on 56% of S1 names)
+    "V1.16a": ("Hernandez Pipeline", ""), "V1.16b": ("Greensboro Scholarship Fund", ""),
+    # new: generic romanisation across scripts (Devanagari, Tamil, Gujarati, Bengali, Gurmukhi)
+    "V1.17a": ("लिमिटेड", ""), "V1.17b": ("லிமிடெட்", ""), "V1.17c": ("ટેક્નોલોજીસ", ""),
+    "V1.17d": ("প্রাইভেট", ""), "V1.17e": ("ਪ੍ਰਾਈਵੇਟ", ""),
 }
 
 
@@ -261,6 +279,15 @@ def unit_checks(vocab: dict[str, int]) -> list[tuple]:
         ("V1.9", r["V1.9"]["name_clean"].split(), "1 token", len(r["V1.9"]["name_clean"].split()) == 1, "HARD"),
         ("V1.10", [r["V1.10"]["name_roman"], round(sim, 3)], ">= 0.5 3-gram similarity to 'private limited'",
          sim >= 0.5, "SOFT"),
+        ("V1.15", [num(f"V1.15{c}") for c in "abcd"], "ordinals dropped, bis kept, missing-space number kept",
+         [num(f"V1.15{c}") for c in "abcd"] == [[{"v": 78}], [{"v": 12}], [{"v": 8, "bis": "bis"}],
+                                                [{"v": 74}, {"v": 33}]], "HARD"),
+        ("V1.16", [r["V1.16a"]["name_alts"], r["V1.16b"]["name_alts"]], "no alternate names",
+         r["V1.16a"]["name_alts"] == [] and r["V1.16b"]["name_alts"] == [], "HARD"),
+        ("V1.17", [r[f"V1.17{c}"]["name_roman"] for c in "abcde"],
+         "limited, limitet, teknolojis, praibhet, praivet",
+         [r[f"V1.17{c}"]["name_roman"] for c in "abcde"] == ["limited", "limitet", "teknolojis", "praibhet", "praivet"],
+         "SOFT"),
     ]
 
 
@@ -278,13 +305,14 @@ def main() -> bool:
     if not all(c["pass"] for c in checks if c["level"] == "HARD"):
         return finish(checks)  # D0.4: unit checks gate the full-data run
 
-    stats = {"rows": {}, "raw_identical": True, "indic_names": 0, "empty_roman": 0, "residual_indic_chars": 0}
+    stats = {"rows": {}, "raw_identical": True, "nonlatin_names": 0, "empty_roman": 0, "residual_nonlatin_chars": 0}
     for split in ("train", "test"):
         for path in files(split):
             normalise_file(path, vocabs[split], WORK / f"{path.stem}.parquet", stats)
 
-    check("V1.11", {k: stats[k] for k in ("indic_names", "empty_roman", "residual_indic_chars")},
-          "100% non-empty name_roman", stats["empty_roman"] == 0 and stats["indic_names"] > 0)
+    check("V1.11", {k: stats[k] for k in ("nonlatin_names", "empty_roman", "residual_nonlatin_chars")},
+          "100% non-empty name_roman, no non-Latin letters left",
+          stats["empty_roman"] == 0 and stats["residual_nonlatin_chars"] == 0 and stats["nonlatin_names"] > 0)
     check("V1.12", {"rows": stats["rows"], "raw_identical": stats["raw_identical"]},
           "rows in = rows out; raw fields identical",
           stats["raw_identical"] and all(a == b for a, b in stats["rows"].values()))
@@ -295,8 +323,15 @@ def main() -> bool:
     same = sha256(WORK / "_rerun.parquet") == sha256(WORK / f"{path.stem}.parquet")
     (WORK / "_rerun.parquet").unlink()
     check("V1.13", same, "identical output hash", same)
-    check("V1.14", "normalise() is the only transform, called identically for all 6 files; vocab = own split's S1",
-          "one code path", True)
+    # V1.14: behavioural, not a claim. The same rows normalised with train's vs test's vocabulary must
+    # agree on every column except name_alts (domain segmentation is the only vocab-dependent step).
+    sample = read_tsv(files("test")[1]).slice(0, 200_000)
+    a, b = normalise(sample, vocabs["train"]), normalise(sample, vocabs["test"])
+    other = [c for c in a.columns if c != "name_alts"]
+    same_rest = a.select(other).equals(b.select(other))
+    alts_diff = int((a["name_alts"] != b["name_alts"]).sum())
+    check("V1.14", {"rows": sample.height, "non_alt_columns_identical": same_rest, "rows_alts_differ": alts_diff},
+          "one code path: only name_alts may depend on the split", same_rest)
     return finish(checks)
 
 

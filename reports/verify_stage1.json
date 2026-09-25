@@ -135,11 +135,11 @@
  {
   "id": "V1.11",
   "value": {
-   "indic_names": 1620114,
+   "nonlatin_names": 1620114,
    "empty_roman": 0,
-   "residual_indic_chars": 0
+   "residual_nonlatin_chars": 0
   },
-  "expected": "100% non-empty name_roman",
+  "expected": "100% non-empty name_roman, no non-Latin letters left",
   "pass": true,
   "level": "HARD"
  },
@@ -187,9 +187,68 @@
  },
  {
   "id": "V1.14",
-  "value": "normalise() is the only transform, called identically for all 6 files; vocab = own split's S1",
-  "expected": "one code path",
+  "value": {
+   "rows": 200000,
+   "non_alt_columns_identical": true,
+   "rows_alts_differ": 1315
+  },
+  "expected": "one code path: only name_alts may depend on the split",
   "pass": true,
   "level": "HARD"
+ },
+ {
+  "id": "V1.15",
+  "value": [
+   [
+    {
+     "v": 78
+    }
+   ],
+   [
+    {
+     "v": 12
+    }
+   ],
+   [
+    {
+     "v": 8,
+     "bis": "bis"
+    }
+   ],
+   [
+    {
+     "v": 74
+    },
+    {
+     "v": 33
+    }
+   ]
+  ],
+  "expected": "ordinals dropped, bis kept, missing-space number kept",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.16",
+  "value": [
+   [],
+   []
+  ],
+  "expected": "no alternate names",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.17",
+  "value": [
+   "limited",
+   "limitet",
+   "teknolojis",
+   "praibhet",
+   "praivet"
+  ],
+  "expected": "limited, limitet, teknolojis, praibhet, praivet",
+  "pass": true,
+  "level": "SOFT"
  }
 ]
