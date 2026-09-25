@@ -1,0 +1,145 @@
+[
+ {
+  "id": "V2.1",
+  "value": {
+   "test/France": 240660,
+   "test/India": 916102,
+   "test/US": 829543,
+   "train/India": 919701,
+   "train/US": 1264175
+  },
+  "expected": "non-empty for all 5 split/country combos",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V2.2",
+  "value": {
+   "train/US": 35.8,
+   "train/India": 44.2,
+   "test/US": 29.1,
+   "test/India": 43.5,
+   "test/France": 34.4
+  },
+  "expected": "within ±1.0 pt of 35.8 / 44.4 / 29.1 / 43.8 / 34.4 (§9b)",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V2.3",
+  "value": {
+   "India/name_n_s1": 0.0231,
+   "India/name_s1_per100k": 0.0012,
+   "India/name_n_s1_pct": 0.0012,
+   "India/name_local_n_s1": 0.0,
+   "India/coloc_n_s1": 0.0006,
+   "India/coloc_n_s1_pct": 0.0006,
+   "US/name_n_s1": 0.0364,
+   "US/name_s1_per100k": 0.0357,
+   "US/name_n_s1_pct": 0.0357,
+   "US/name_local_n_s1": 0.0,
+   "US/coloc_n_s1": 0.0253,
+   "US/coloc_n_s1_pct": 0.0253
+  },
+  "expected": "PSI < 0.2 for the normalised (percentile) counts",
+  "pass": true,
+  "level": "SOFT"
+ },
+ {
+  "id": "V2.4",
+  "value": {
+   "rd~road": true,
+   "st~street": true,
+   "mn~minnesota": true,
+   "up~uttar": true,
+   "up~pradesh": true,
+   "calcutta~kolkata": true,
+   "noise:cdp": true,
+   "noise:township": false
+  },
+  "expected": "all present",
+  "pass": false,
+  "level": "HARD",
+  "note": "Only miss: 'township' not flagged as noise (injected-rate 0.43 vs 0.5 cut; its denominator counts genuine S1 'X Township' too). Impact negligible: in ~0.6% of true pairs, adds one low-weight word, lowers address similarity slightly, cannot flip a match. Not tuned further (user decision 2026-09-25)."
+ },
+ {
+  "id": "V2.5",
+  "value": {
+   "group": -2.55,
+   "holdings": -4.1,
+   "industries": -3.7,
+   "overseas": -6.83,
+   "center": 1.11,
+   "services": 0.32,
+   "shri": -0.47
+  },
+  "expected": "group/holdings/industries/overseas <= -1; center/services/shri >= -0.5",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V2.6",
+  "value": {
+   "truncation": 16380,
+   "zero_pad": 24663,
+   "letter": 7448,
+   "injected": 40460
+  },
+  "expected": "non-zero counts",
+  "pass": true,
+  "level": "SOFT"
+ },
+ {
+  "id": "V2.7",
+  "value": 0,
+  "expected": "0 entries below support",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V2.8",
+  "value": "build_lexicon() reads only work/s1/train_* + train owners; word_stats/record_counts(split) read only that split's records",
+  "expected": "train pairs only; per-split counts",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V2.9",
+  "value": "Tier 2, not built",
+  "expected": "r~rue, bd~boulevard, av~avenue, pl~place",
+  "pass": false,
+  "level": "SOFT"
+ },
+ {
+  "id": "V2.10",
+  "value": {
+   "french": {
+    "eurl": {
+     "w": 0.0,
+     "learned": false,
+     "pct": 0.99996
+    },
+    "sarl": {
+     "w": 0.0,
+     "learned": false,
+     "pct": 1.0
+    },
+    "sas": {
+     "w": 0.0,
+     "learned": false,
+     "pct": 0.99999
+    },
+    "sasu": {
+     "w": 0.0,
+     "learned": false,
+     "pct": 0.99992
+    }
+   },
+   "ref_min_abs_legal_lo": 0.0928,
+   "gamma": -0.2305
+  },
+  "expected": "|w| <= most neutral train legal word, all 4 words",
+  "pass": true,
+  "level": "HARD"
+ }
+]
