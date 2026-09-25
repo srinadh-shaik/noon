@@ -1,0 +1,195 @@
+[
+ {
+  "id": "V1.1",
+  "value": "floating desert amc",
+  "expected": "floating desert amc",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.2",
+  "value": [
+   "foot and ankle care",
+   "foot and ankle care"
+  ],
+  "expected": "equal",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.3",
+  "value": [
+   "allen horizon",
+   "regional california",
+   "incorporated peak",
+   "downtown seafood",
+   "peak nexpoint"
+  ],
+  "expected": "junk removed (bracket words kept), raw kept",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.4",
+  "value": "studio 90 pub",
+  "expected": "90 kept",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.5",
+  "value": [
+   "miller purpose"
+  ],
+  "expected": "['miller purpose']",
+  "pass": true,
+  "level": "SOFT"
+ },
+ {
+  "id": "V1.6",
+  "value": [
+   [
+    "gildriza",
+    "eyf pharmaceutical inc"
+   ],
+   [
+    "nexaria labs",
+    "allen horizon floating inc"
+   ]
+  ],
+  "expected": "2 alternates each",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.7",
+  "value": [
+   [
+    {
+     "v": 70
+    }
+   ],
+   [
+    {
+     "v": 44,
+     "letter": "d"
+    }
+   ],
+   [
+    {
+     "v": 204,
+     "frac": "1/2"
+    }
+   ],
+   [
+    {
+     "v": 36,
+     "bis": "bis"
+    }
+   ],
+   [
+    {
+     "v": 9
+    },
+    {
+     "v": 123
+    }
+   ],
+   [
+    {
+     "v": 2151,
+     "sub": "8"
+    }
+   ]
+  ],
+  "expected": "exact",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.8",
+  "value": "",
+  "expected": "empty",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.9",
+  "value": [
+   "लिमिटेड"
+  ],
+  "expected": "1 token",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.10",
+  "value": [
+   "praivet limited",
+   0.3
+  ],
+  "expected": ">= 0.5 3-gram similarity to 'private limited'",
+  "pass": false,
+  "level": "SOFT"
+ },
+ {
+  "id": "V1.11",
+  "value": {
+   "indic_names": 1620114,
+   "empty_roman": 0,
+   "residual_indic_chars": 0
+  },
+  "expected": "100% non-empty name_roman",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.12",
+  "value": {
+   "rows": {
+    "train_source1.tsv": [
+     2206821,
+     2206821
+    ],
+    "train_source2.tsv": [
+     5034616,
+     5034616
+    ],
+    "train_source3.tsv": [
+     5285603,
+     5285603
+    ],
+    "test_source1.tsv": [
+     1732544,
+     1732544
+    ],
+    "test_source2.tsv": [
+     4887273,
+     4887273
+    ],
+    "test_source3.tsv": [
+     5082316,
+     5082316
+    ]
+   },
+   "raw_identical": true
+  },
+  "expected": "rows in = rows out; raw fields identical",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.13",
+  "value": true,
+  "expected": "identical output hash",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V1.14",
+  "value": "normalise() is the only transform, called identically for all 6 files; vocab = own split's S1",
+  "expected": "one code path",
+  "pass": true,
+  "level": "HARD"
+ }
+]
