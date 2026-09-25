@@ -61,3 +61,10 @@ Across 130k train true pairs with numbers on both sides:
 3. **`name_tokens` now includes legal and stop words.** Any Stage 2+ code that assumed they were stripped must weight them instead.
 4. `name_alts` is now almost always empty for S1 (12 rows in train), and non-empty only for real `dba`/`formerly` names or real domains (about 4–6% of S2/S3).
 5. Recommendation for Stage 5: compare romanised names with a letter-collapsed key on **both** sides, so geminates like `ottappalam`↔`otapalam` still match.
+
+## E. Review follow-up (from the "implement architecture v4.1" session)
+- **Regression fixed:** the dot-TLD requirement had dropped `@handle` names (`@sarsaconsultants`, `@GOFRANCE`), about 54k names. Added `HANDLE = (?:^|\s)@([a-z0-9_]{4,})`, coalesced with the dot-TLD rule. `_` is treated as an explicit word break (`@sarsa_consultants` → `sarsa consultants`).
+  - **Result:** names with an @handle across the 6 files: **54,535, all with an alternate** (17eb4cf: 53,784, since the old rule only caught handles at the end of the name).
+  - S1 rows with any alternate stay at **33** (train + test), so the junk-alternate fix holds.
+  - V1.16 extended with `@midwestinterstate` → `midwest interstate` and `@sarsa_consultants` → `sarsa consultants`. **14/14 HARD pass.**
+- **Caveat accepted, for the architect:** removing `legal_family` is safe only if Stage 2 gives a **fallback weight to leftover words that have no learned log-odds**. In France, `sarl`/`sas`/`eurl` never occur in train. The fallback must use per-split frequency (very common in that split and country → near-neutral), or French legal-form swaps in true pairs will look like near-twins. The Stage 2 builder will implement it and add a check.

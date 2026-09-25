@@ -37,8 +37,10 @@ TOKEN = r"[\p{L}\p{M}\p{N}\x{200C}\x{200D}]+"
 NUMBER = r"\d+(?:\s+\d/\d\b|\s*(?:bis|ter|quater)\b|[a-z]{1,3}\b|(?:[/-]\d+)+)?"
 ORDINAL = r"^\d+[a-z]{2,3}$"
 ALIAS = r"\s(?:d/b/a|dba:?|f/k/a|aka|t/a|trading as|formerly known as|formerly)\s"
-# A web domain needs a real dot-TLD; a bare last word is not a domain (it was: 56% of S1 names got junk alts).
+# A web domain needs a real dot-TLD, or an explicit @handle; a bare last word is neither
+# (it was: 56% of S1 names got junk alts).
 DOMAIN = r"(?:^|\s)@?(?:www\.)?([a-z0-9]{4,})\.[a-z]{2,6}\b"
+HANDLE = r"(?:^|\s)@([a-z0-9_]{4,})"
 # Measured on 215k train true-pair words (>=3 letters, 1 digit): the S1 word has this letter 85-93% of the time.
 LEET = {"0": "o", "1": "l", "5": "s", "6": "g", "8": "b"}
 _VOWEL_NAMES = {"A", "AA", "I", "II", "U", "UU", "E", "EE", "AI", "O", "OO", "AU"}
@@ -156,7 +158,10 @@ def normalise(df: pl.DataFrame, vocab: dict[str, int]) -> pl.DataFrame:
         _ntok=tok(pl.col("_name").str.replace_all("\x1f", " ")).list.eval(deleet),
         _atok=tok(pl.col("_addr")),
         _parts=pl.col("_name").str.split("\x1f"),
-        _stem=pl.col("_name").str.extract(DOMAIN, 1),
+        _stem=pl.coalesce(
+            pl.col("_name").str.extract(DOMAIN, 1),
+            pl.col("_name").str.extract(HANDLE, 1).str.replace_all("_", " "),  # "_" is an explicit word break
+        ),
         numbers=pl.col("_addr").str.extract_all(NUMBER).list.eval(
             pl.element().filter(
                 ~pl.element().str.contains(ORDINAL) | pl.element().str.contains(r"(?:bis|ter|quater)$")
@@ -242,6 +247,7 @@ UNIT = {  # V-id: (name, address)
     "V1.15c": ("x", "8BIS CLOS GUSTAVE"), "V1.15d": ("x", "74SECTOR-33 DWARKA"),
     # new: a bare last word is not a domain (junk alts on 56% of S1 names)
     "V1.16a": ("Hernandez Pipeline", ""), "V1.16b": ("Greensboro Scholarship Fund", ""),
+    "V1.16c": ("@midwestinterstate", ""), "V1.16d": ("Allen Horizon @sarsa_consultants", ""),
     # new: generic romanisation across scripts (Devanagari, Tamil, Gujarati, Bengali, Gurmukhi)
     "V1.17a": ("लिमिटेड", ""), "V1.17b": ("லிமிடெட்", ""), "V1.17c": ("ટેક્નોલોજીસ", ""),
     "V1.17d": ("প্রাইভেট", ""), "V1.17e": ("ਪ੍ਰਾਈਵੇਟ", ""),
@@ -282,8 +288,11 @@ def unit_checks(vocab: dict[str, int]) -> list[tuple]:
         ("V1.15", [num(f"V1.15{c}") for c in "abcd"], "ordinals dropped, bis kept, missing-space number kept",
          [num(f"V1.15{c}") for c in "abcd"] == [[{"v": 78}], [{"v": 12}], [{"v": 8, "bis": "bis"}],
                                                 [{"v": 74}, {"v": 33}]], "HARD"),
-        ("V1.16", [r["V1.16a"]["name_alts"], r["V1.16b"]["name_alts"]], "no alternate names",
-         r["V1.16a"]["name_alts"] == [] and r["V1.16b"]["name_alts"] == [], "HARD"),
+        ("V1.16", [r[f"V1.16{c}"]["name_alts"] for c in "abcd"],
+         "bare last word: no alternate; @handle: one segmented alternate",
+         r["V1.16a"]["name_alts"] == [] and r["V1.16b"]["name_alts"] == []
+         and len(r["V1.16c"]["name_alts"]) == 1 and " " in r["V1.16c"]["name_alts"][0]
+         and len(r["V1.16d"]["name_alts"]) == 1, "HARD"),
         ("V1.17", [r[f"V1.17{c}"]["name_roman"] for c in "abcde"],
          "limited, limitet, teknolojis, praibhet, praivet",
          [r[f"V1.17{c}"]["name_roman"] for c in "abcde"] == ["limited", "limitet", "teknolojis", "praibhet", "praivet"],

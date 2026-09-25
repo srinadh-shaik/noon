@@ -190,7 +190,7 @@
   "value": {
    "rows": 200000,
    "non_alt_columns_identical": true,
-   "rows_alts_differ": 1315
+   "rows_alts_differ": 1405
   },
   "expected": "one code path: only name_alts may depend on the split",
   "pass": true,
@@ -232,9 +232,15 @@
   "id": "V1.16",
   "value": [
    [],
-   []
+   [],
+   [
+    "midwest interstate"
+   ],
+   [
+    "sarsa consultants"
+   ]
   ],
-  "expected": "no alternate names",
+  "expected": "bare last word: no alternate; @handle: one segmented alternate",
   "pass": true,
   "level": "HARD"
  },
