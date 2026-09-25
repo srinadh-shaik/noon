@@ -11,11 +11,12 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pyarrow.parquet as pq
 from rapidfuzz import fuzz
 from rapidfuzz.process import cpdist
 
 sys.path.insert(0, str(Path(__file__).parent))
-from s0_harness import ROOT  # noqa: E402
+from s0_harness import ROOT, uniform  # noqa: E402
 from s2_knowledge import LEX, NUM, WORK as S2W, number_relation  # noqa: E402
 from s3_retrieve import S0W, S1W, log  # noqa: E402
 from s4_candidates import S4W  # noqa: E402
@@ -100,10 +101,11 @@ def competition(p: pl.DataFrame, rev: pl.DataFrame) -> pl.DataFrame:
     return feats[0].join(feats[1], on="pid")
 
 
-def features(split: str, name: str) -> None:
+def pair_features(pairs: pl.DataFrame, rev: pl.DataFrame, split: str, counts: pl.DataFrame,
+                  labels: tuple[pl.DataFrame, pl.DataFrame] | None) -> pl.DataFrame:
+    """F1-F8 for one chunk of pairs. Every feature is per pair, so chunking by S1 changes no value."""
     t0 = time.time()
-    pairs = pl.read_parquet(S4W / name / "pairs.parquet").with_row_index("pid")
-    rev = pl.read_parquet(S4W / name / "reverse.parquet")
+    pairs = pairs.with_row_index("pid")
     s1f = side_fields(split, pairs.select(entity_id="s1").unique(), (1,))
     recf = side_fields(split, pairs.select(entity_id="rec").unique(), (2, 3))
     p = (pairs.join(s1f.rename({c: f"{c}_1" for c in FIELDS if c != "entity_id"} | {"entity_id": "s1"}), on="s1")
@@ -134,8 +136,6 @@ def features(split: str, name: str) -> None:
     alts = alts.with_columns(s=fuzzy(alts["alt"], alts["s1n"], fuzz.token_set_ratio)).group_by("pid").agg(
         alt_tsr_max=pl.col("s").max())
     log("similarities", t0)
-    counts = pl.read_parquet(S2W / f"{split}_records.parquet").select(
-        "entity_id", "name_n_s1_pct", "name_local_n_s1", "coloc_n_s1_pct", "name_rec_per100k")
     out = (base.join(alts, on="pid", how="left")
            .join(token_features(p, split, "name", "name_tokens"), on="pid")
            .join(token_features(p, split, "addr", "addr_tokens"), on="pid")
@@ -145,15 +145,48 @@ def features(split: str, name: str) -> None:
                  how="left")
            .join(counts.rename(lambda c: c if c == "entity_id" else f"rec_{c}"), left_on="rec", right_on="entity_id",
                  how="left"))
-    if split == "train":
-        owner = pl.read_parquet(S0W / "rec.parquet", columns=["rec", "owner"])
-        folds = pl.read_parquet(S0W / "s1.parquet", columns=["s1", "fold"])
+    if labels is not None:
+        owner, folds = labels
         out = (out.join(owner, on="rec", how="left")
                .with_columns(label=(pl.col("owner") == pl.col("s1")).fill_null(False)).drop("owner")
                .join(folds, on="s1"))
+    return out.drop("pid")
+
+
+CHUNK_PAIRS = 3_000_000  # pairs per chunk: ~1.3 KB/pair on top of the fixed tables (measured by the stage8+ session)
+KEEP_TYPES = {"s1": pl.Utf8, "rec": pl.Utf8, "label": pl.Boolean, "fold": pl.Int8, "num_rel": pl.Int8}
+
+
+def fixed_types(df: pl.DataFrame) -> pl.DataFrame:
+    """One schema for every chunk: ids, label, fold and num_rel as named; flags Boolean; every other feature Float32."""
+    return df.select(pl.col(c).cast(KEEP_TYPES.get(c, pl.Boolean if df.schema[c] == pl.Boolean else pl.Float32))
+                     for c in df.columns)
+
+
+def features(split: str, name: str) -> None:
+    t0 = time.time()
+    pairs_lf, rev_lf = pl.scan_parquet(S4W / name / "pairs.parquet"), pl.scan_parquet(S4W / name / "reverse.parquet")
+    s1s = pairs_lf.select("s1").unique().collect()
+    n_chunks = max(1, -(-pairs_lf.select(pl.len()).collect().item() // CHUNK_PAIRS))
+    s1s = s1s.with_columns(chunk=pl.Series((uniform(s1s["s1"], 41) * n_chunks).astype(np.int32)))
+    counts = pl.read_parquet(S2W / f"{split}_records.parquet").select(
+        "entity_id", "name_n_s1_pct", "name_local_n_s1", "coloc_n_s1_pct", "name_rec_per100k")
+    labels = ((pl.read_parquet(S0W / "rec.parquet", columns=["rec", "owner"]),
+               pl.read_parquet(S0W / "s1.parquet", columns=["s1", "fold"])) if split == "train" else None)
     (S5W / name).mkdir(parents=True, exist_ok=True)
-    out.drop("pid").write_parquet(S5W / name / "features.parquet")
-    log(f"{out.height:,} rows x {out.width} columns -> work/s5/{name}/features.parquet", t0)
+    path, writer, rows = S5W / name / "features.parquet", None, 0
+    for c in range(n_chunks):
+        pc = pairs_lf.join(s1s.filter(pl.col("chunk") == c).select("s1").lazy(), on="s1", how="semi").collect()
+        if pc.is_empty():
+            continue
+        rev = rev_lf.join(pc.select("rec").unique().lazy(), on="rec", how="semi").collect()
+        table = fixed_types(pair_features(pc, rev, split, counts, labels)).to_arrow()
+        writer = writer or pq.ParquetWriter(path, table.schema)
+        writer.write_table(table)
+        rows += table.num_rows
+        log(f"chunk {c + 1}/{n_chunks}: {table.num_rows:,} pairs", t0)
+    writer.close()
+    log(f"{rows:,} rows x {table.num_columns} columns -> work/s5/{name}/features.parquet", t0)
 
 
 if __name__ == "__main__":
