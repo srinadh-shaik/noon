@@ -5,9 +5,8 @@ Usage:
                                                  # test = all test S1 -> work/s4/MODE/{s1,pairs,reverse}.parquet
 
 pairs.parquet   one row per (s1, rec): forward/reverse rank and score per view, street-key flag
-reverse.parquet every candidate record's reverse top-20 over ALL S1 of its country (the competition it faces)
-First-pass limit: reverse search runs for the candidate records only, so a pair found by reverse search alone
-(record whose top-20 holds a subset S1 that no forward view or key returned) is not added.
+reverse.parquet every record's reverse top-20 over ALL S1 of its country (the competition it faces); a pair found
+                by the reverse search alone (a query S1 in the record's top-20) is a candidate too (V4.3)
 """
 import sys
 import time
@@ -54,13 +53,13 @@ def candidates(split: str, s1_ids: pl.DataFrame, out: Path) -> None:
             log(f"{split}/{country} {view} forward: {q.height:,} S1", t0)
         key = s2_knowledge.candidate_pairs(q.select(s1="entity_id"), split)
         fwd.append(key.with_columns(view=pl.lit("V3"), rank=pl.lit(1, pl.Int32), score=pl.lit(1.0, pl.Float32)))
-        cand_recs = pl.concat([f.select("rec") for f in fwd]).unique()
-        rows = r.with_row_index("i").join(cand_recs.rename({"rec": "entity_id"}), on="entity_id", how="semi")
-        for view, (x, s) in index.items():  # competition: each candidate record against every S1 of the country
-            qi, si, rank, sc = search_gpu(x[rows["i"].to_numpy()], s, REV_K)
-            rev.append(pl.DataFrame({"rec": rows["entity_id"].gather(qi), "s1": s1c["entity_id"].gather(si),
+        # every record of the country searches back against every S1: the competition it faces, and the pairs
+        # that only the reverse view finds (recall curve: +1.6 pts India @20); accuracy over compute
+        for view, (x, s) in index.items():
+            qi, si, rank, sc = search_gpu(x, s, REV_K)
+            rev.append(pl.DataFrame({"rec": r["entity_id"].gather(qi), "s1": s1c["entity_id"].gather(si),
                                      "view": view, "rank": rank.astype(np.int32), "score": sc}))
-            log(f"{split}/{country} {view} reverse: {rows.height:,} candidate records", t0)
+            log(f"{split}/{country} {view} reverse: {r.height:,} records", t0)
         del index
     fwd, rev = pl.concat(fwd), pl.concat(rev)
     rev.write_parquet(out / "reverse.parquet")
