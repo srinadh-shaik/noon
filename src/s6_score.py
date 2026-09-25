@@ -49,17 +49,23 @@ def score(name: str) -> None:
     x, cols = matrix(df)
     y, fold = df["label"].to_numpy().astype(np.int8), df["fold"].to_numpy()
     oof, rounds, gain = np.zeros(len(y)), [], np.zeros(len(cols))
-    for k in np.unique(fold):
+    folds = np.unique(fold)
+    for j, k in enumerate(folds):
         tr, va = fold != k, fold == k
-        m = lgb.train(PARAMS, lgb.Dataset(x[tr], y[tr], feature_name=cols, categorical_feature=["num_rel"]),
-                      num_boost_round=3000, valid_sets=[lgb.Dataset(x[va], y[va], categorical_feature=["num_rel"])],
-                      callbacks=[lgb.early_stopping(100, verbose=False)])
-        oof[va] = m.predict(x[va], num_iteration=m.best_iteration)
+        # rounds come from an inner fold inside the training folds, so fold k's OOF never steers its own model
+        inner = fold == folds[(j + 1) % len(folds)]
+        es = lgb.train(PARAMS, lgb.Dataset(x[tr & ~inner], y[tr & ~inner], feature_name=cols, categorical_feature=["num_rel"]),
+                       num_boost_round=3000, valid_sets=[lgb.Dataset(x[inner], y[inner], categorical_feature=["num_rel"])],
+                       callbacks=[lgb.early_stopping(100, verbose=False)])
+        n = es.best_iteration
+        del es
+        m = lgb.train(PARAMS, lgb.Dataset(x[tr], y[tr], feature_name=cols, categorical_feature=["num_rel"]), num_boost_round=n)
+        oof[va] = m.predict(x[va])
         (S6W / name).mkdir(parents=True, exist_ok=True)
-        m.save_model(str(S6W / name / f"model_fold{k}.txt"), num_iteration=m.best_iteration)
-        rounds.append(m.best_iteration)
+        m.save_model(str(S6W / name / f"model_fold{k}.txt"))
+        rounds.append(n)
         gain += m.feature_importance("gain")
-        log(f"fold {k}: {m.best_iteration} rounds, AUC {auc(y[va], oof[va]):.5f}", t0)
+        log(f"fold {k}: {n} rounds (inner early stop), AUC {auc(y[va], oof[va]):.5f}", t0)
     # V6.3 label-shuffle control: a model trained on shuffled labels must not beat chance on held-out S1
     rng = np.random.default_rng(0)
     tr, va = fold != fold.min(), fold == fold.min()
