@@ -24,7 +24,7 @@ Python **3.12.3**, dependencies pinned in `requirements.txt`.
 
 ```bash
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -r requirements.txt
+uv pip install --python .venv/bin/python -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
 ```
 
 Unit tests (seconds, no data needed except Stage 9's validator script):
@@ -79,9 +79,11 @@ before applying. Old thresholds never carry over.
 
 ## 4. AWS
 
-- **Instance:** `g5.4xlarge` or `g6.4xlarge` (16 vCPU, 64 GB RAM, one 24 GB GPU). The full-scale
-  run needs ≥ 32 GB RAM; the GPU is for Stage 3 lexical search on GPU and the optional
-  embedding view. CPU-only fallback: `r6i.4xlarge` / `r7i.4xlarge` (128 GB RAM). Use ≥ 200 GB gp3 disk.
+- **Instance:** `g5.8xlarge` or `g6.8xlarge` (32 vCPU, 128 GB RAM, one 24 GB GPU). A CUDA GPU is
+  **required**: Stage 4 runs the TF-IDF search on GPU (`search_gpu`). Memory peaks in `s4_candidates.py full`
+  (~90M forward + ~300M reverse rows held at once, ≥ 64 GB); `s8_decide.py tune full` needs ~22 GB.
+  A 64 GB box (`g5.4xlarge`) may work but has no headroom. Use ≥ 200 GB gp3 disk.
+- `s3_retrieve.py curve` (step 4, ~20 min CPU) is the recall report (V3.1); Stage 4 does its own search.
 - **Setup:**
   ```bash
   git clone <repo> noon && cd noon          # or unzip code/business_entity_resolution/
