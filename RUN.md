@@ -36,7 +36,7 @@ for t in src/test_*.py; do .venv/bin/python "$t"; done
 ## 3. Run
 
 ```bash
-bash run_all.sh                 # all 18 steps, prints wall-clock per step
+bash run_all.sh                 # all 22 steps, prints wall-clock per step
 FROM=9 bash run_all.sh          # resume from step 9 (artefacts of steps 1–8 are reused)
 PY=/path/to/python bash run_all.sh
 ```
@@ -47,23 +47,27 @@ PY=/path/to/python bash run_all.sh
 | 2 | `s1_normalise.py` | `work/s1/` normalised records |
 | 3 | `s2_knowledge.py` | `work/s2/` counts + lexicon |
 | 4 | `s3_retrieve.py curve` | `reports/recall_curve.csv` |
-| 5–6 | `s4_candidates.py full` / `test` | `work/s4/{full,test}/pairs.parquet` |
-| 7–8 | `s5_features.py full` / `test` | `work/s5/{full,test}/` |
-| 9–10 | `s6_score.py full` / `test` | `work/s6/{full,test}/scores.parquet` (OOF on train) |
-| 11–12 | `s7_owner_model.py fit full` / `predict test full` | G5 owner-or-none q: `work/s7/{full,test}/owner_q.parquet` |
-| 13 | `s8_decide.py tune full --owner-model` | G5 candidate thresholds: `work/s8/full_owner/` |
-| 14 | `s8_decide.py tune full` | thresholds tuned on OOF in Worlds A/B/B′ (δ, τ₁, τ₂, G6, G11) + V7/V8 reports |
-| 15 | `s7_owner_model.py gate full` | G5 verdict in `reports/gates.md` |
-| 16 | `s8_decide.py apply test full` (or `full_owner --owner-model` if G5 kept) | `work/s8/test/final.parquet` |
-| 17 | `s9_output.py write test` | `output/*.tsv` + official validator |
-| 18 | `s9_output.py summary` | `reports/verify_summary.md` |
+| 5–6 | `s4_candidates.py full` / `test` | `work/s4/{full,test}/{s1,pairs,reverse}.parquet` |
+| 7–8 | `verify_s3_6.py stage3 full test` / `stage4 full test` | `reports/verify_stage3.json`, `verify_stage4.json` (V3.*, V4.1–4.5) |
+| 9–10 | `s5_features.py full` / `test` | `work/s5/{full,test}/features.parquet` |
+| 11 | `verify_s3_6.py stage5 full test` | `reports/verify_stage5.json` (V5.*), V4.6 features == pairs |
+| 12–13 | `s6_score.py full` / `test` | `work/s6/{full,test}/scores.parquet` (OOF on train; test = mean of 5 fold models) |
+| 14 | `verify_s3_6.py stage6 full test` | `reports/verify_stage6.json` (V6.*), V4.6 scores == pairs |
+| 15–16 | `s7_owner_model.py fit full` / `predict test full` | G5 owner-or-none q: `work/s7/{full,test}/owner_q.parquet` |
+| 17 | `s8_decide.py tune full --owner-model` | G5 candidate thresholds: `work/s8/full_owner/` |
+| 18 | `s8_decide.py tune full` | thresholds tuned on OOF in Worlds A/B/B′ (δ, τ₁, τ₂, G6, G11) + V7/V8 reports |
+| 19 | `s7_owner_model.py gate full` | G5 verdict in `reports/gates.md` |
+| 20 | `s8_decide.py apply test full` (or `full_owner --owner-model` if G5 kept) | `work/s8/test/final.parquet` |
+| 21 | `s9_output.py write test` | `output/*.tsv` + official validator |
+| 22 | `s9_output.py summary` | `reports/verify_summary.md` |
 
 Every stage writes `reports/verify_stage<N>.json` and exits non-zero when a HARD check
-fails, which stops `run_all.sh`.
+fails, which stops `run_all.sh`. Read the failing check in the report; to continue anyway
+(a deliberate override), resume at the next step: `FROM=<failed step + 1> bash run_all.sh`.
 
 **V9.4 (reproducibility):** the first run records the output hashes as `first run, rerun to
 confirm` (pending, not failing). `package` refuses until a rerun gives `identical`:
-`FROM=16 bash run_all.sh` (minutes) re-derives the final lists and files; a full clean
+`FROM=20 bash run_all.sh` (minutes) re-derives the final lists and files; a full clean
 rerun (`bash run_all.sh` from a fresh checkout) is the strict release check (D4).
 
 **Leaderboard probes (G7, G10),** two-threshold rule, same model:
@@ -74,7 +78,7 @@ Optional ID-existence check (a few GB of RAM): `python src/s9_output.py write te
 Package: `python src/s9_output.py package TEAM` → `TEAM_submission.zip` (refuses if a Stage 9
 HARD check fails or the no-network scan finds a hit).
 
-**Rule:** if anything in Stages 1–6 changes, re-run steps 11–15 (G5 model + `s8_decide.py tune full`)
+**Rule:** if anything in Stages 1–6 changes, re-run steps 15–19 (G5 model + `s8_decide.py tune full`)
 before applying. Old thresholds never carry over.
 
 ## 4. AWS

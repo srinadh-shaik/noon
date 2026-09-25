@@ -102,7 +102,7 @@ def write(name: str, test_dir: Path = Path("dataset/test"), out: Path = OUT, wor
     hashes = {f: sha256(p) for f, p in files.items()}
     old = {f: prev.get("V9.4", {}).get(f) for f in HEADS}
     status = "first run, rerun to confirm" if not any(old.values()) else "identical" if old == hashes else "changed"
-    # a first run is pending, not failing; `package` demands "identical" (rerun `FROM=16 bash run_all.sh` first)
+    # a first run is pending, not failing; `package` demands "identical" (rerun `FROM=20 bash run_all.sh` first)
     check("V9.4", {**hashes, "status": status}, "identical to the previous run's hashes", status != "changed")
 
     if check_ids:

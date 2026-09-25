@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 PY=${PY:-.venv/bin/python}
 FROM=${FROM:-1}
 
-# step 16 ships the owner-or-none model only if gate G5 (step 15) kept it; evaluated when the step runs
+# step 20 ships the owner-or-none model only if gate G5 (step 19) kept it; evaluated when the step runs
 APPLY='s8_decide.py apply test $(grep -q "^| G5 |.*✅" reports/gates.md && echo "full_owner --owner-model" || echo full)'
 STEPS=(
   "s0_harness.py build"
@@ -15,10 +15,14 @@ STEPS=(
   "s3_retrieve.py curve"
   "s4_candidates.py full"
   "s4_candidates.py test"
+  "verify_s3_6.py stage3 full test"
+  "verify_s3_6.py stage4 full test"
   "s5_features.py full"
   "s5_features.py test"
+  "verify_s3_6.py stage5 full test"
   "s6_score.py full"
   "s6_score.py test"
+  "verify_s3_6.py stage6 full test"
   "s7_owner_model.py fit full"
   "s7_owner_model.py predict test full"
   "s8_decide.py tune full --owner-model"
