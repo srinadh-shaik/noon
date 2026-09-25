@@ -48,7 +48,7 @@ def test():
     assert all(k not in s for k, s in zip(range(5), seen[:5]))
 
     q = pl.read_parquet(om.S7W / "tr" / "owner_q.parquet")
-    assert q.height == tr.height and q["q"].is_between(0, 1).all()
+    assert q.height == om.prefilter(tr).height and q["q"].is_between(0, 1).all()  # same pair set as s8_decide
     assert q.group_by("rec").agg(pl.col("q").sum())["q"].max() <= 1 + 1e-9
     lab = q.join(tr, on=["s1", "rec"])
     assert lab.filter("label")["q"].mean() > 0.8 > 0.1 > lab.filter(~pl.col("label"))["q"].mean(), "OOF learns the pattern"
@@ -62,7 +62,7 @@ def test():
         assert acc > 0.95, acc
 
     # s8 --owner-model swaps p for q, and refuses a partial owner_q
-    sc = s8_decide.owner_q(tr.select("s1", "rec", "p", "label"), "tr")
+    sc = s8_decide.owner_q(om.prefilter(tr.select("s1", "rec", "p", "label")), "tr")  # s8 pre-filters first
     assert sc.join(q, on=["s1", "rec"]).filter(pl.col("p") != pl.col("q")).is_empty()
     try:
         tr.head(1).select("s1", "rec", q=pl.lit(0.5)).write_parquet(om.S7W / "tr" / "owner_q.parquet")

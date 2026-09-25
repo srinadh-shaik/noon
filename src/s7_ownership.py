@@ -9,6 +9,15 @@ V7.* checks (V7.3 needs the tuned decision rule on top). No CLI of its own.
 """
 import polars as pl
 
+FLOOR = 0.02  # lowest tau1 in s8_decide's grid: no decision rule can select a pair below it
+
+
+def prefilter(df, floor: float = FLOOR):
+    """Drop pairs no rule can select (p < floor) but keep each record's runner-up when its best claim clears the
+    floor, so own() sees the same best-vs-second margin as on the full table. Works on DataFrame or LazyFrame."""
+    runner_up = (pl.col("p").rank("ordinal", descending=True).over("rec") == 2) & (pl.col("p").max().over("rec") >= floor)
+    return df.filter((pl.col("p") >= floor) | runner_up)
+
 
 def own(df: pl.DataFrame, delta: float | None) -> pl.DataFrame:
     """df [s1, rec, p, ...] -> kept rows plus q (= p). delta=None switches ownership off (V7.3 control).

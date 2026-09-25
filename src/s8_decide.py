@@ -28,11 +28,12 @@ from sklearn.isotonic import IsotonicRegression
 sys.path.insert(0, str(Path(__file__).parent))
 from gates import set_gate  # noqa: E402
 from s0_harness import REPORTS, ROOT, WORLDS, indexed, load, queries  # noqa: E402
-from s7_ownership import checks as own_checks, own  # noqa: E402
+from s7_ownership import FLOOR, checks as own_checks, own, prefilter  # noqa: E402
 
 S1W, S4W, S5W, S6W, S7W, S8W = (ROOT / f"work/{s}" for s in ("s1", "s4", "s5", "s6", "s7", "s8"))
 TAU1 = np.round(np.arange(0.02, 0.91, 0.02), 2)
 TAU2 = np.round(np.arange(0.30, 0.99, 0.02), 2)
+assert TAU1.min() >= FLOOR, "the p pre-filter (s7_ownership.FLOOR) must sit at or below the lowest tau1"
 DELTA = (None, 0.0, 0.05, 0.1, 0.2)  # None = ownership off (the V7.3 control)
 EPS_GAIN, EPS_LOSS = 0.002, 0.001  # archi.md D0.6
 M = 16  # the expected-F0.5 rule looks at each S1's top-M owned candidates
@@ -150,6 +151,13 @@ class World:
         return f05(c, n, self.k), c, n
 
 
+def oracle(qs: pl.DataFrame, positives: pl.DataFrame, k: np.ndarray) -> float:
+    """Macro F0.5 if every true pair among the candidates were predicted (the recall ceiling), from all scored pairs."""
+    c = (qs.select("s1").with_row_index("i").join(positives.group_by("s1").len("c"), on="s1", how="left")
+         .sort("i")["c"].fill_null(0).to_numpy().astype(np.float64))
+    return round(float(f05(c, c, k).mean()), 5)
+
+
 def better(new: dict, old: dict) -> bool:
     """archi.md D0.6: >= +EPS_GAIN in A and B', no loss worse than -EPS_LOSS in B."""
     return new["A"] - old["A"] >= EPS_GAIN and new["Bp"] - old["Bp"] >= EPS_GAIN and new["B"] - old["B"] >= -EPS_LOSS
@@ -206,14 +214,16 @@ def tune(name: str, owner_model: bool = False) -> bool:
     out = f"{name}_owner" if owner_model else name  # G5 candidate: s7_owner_model.py gate compares the two
     s1_all, rec = load()
     sc = pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p", "label"])
-    sc = owner_q(sc, name) if owner_model else sc
     u = universe(name, s1_all, sc)
     sc = sc.join(u.select("s1"), on="s1", how="semi")
-    log(f"{sc.height:,} scored pairs, {u.height:,} query S1", t0)
+    n_all, positives = sc.height, sc.filter("label").select("s1", "rec")  # every true pair the candidates hold
+    miss = float((u["k"].sum() - positives.height) / u.height)  # true copies per S1 that no candidate holds (World A)
+    sc = prefilter(sc)
+    sc = owner_q(sc, name) if owner_model else sc
+    log(f"{n_all:,} scored pairs, {sc.height:,} kept at p >= {FLOOR} (+ runner-ups), {u.height:,} query S1", t0)
 
     p, y = sc["p"].to_numpy(), sc["label"].to_numpy().astype(np.float64)
     iso = fit_iso(p, y)
-    miss = float((u["k"].sum() - y.sum()) / u.height)  # true copies per S1 that no candidate holds (World A)
     calib = {"ece_raw": round(ece(y, p), 5), "ece_isotonic": round(ece(y, calibrate(p, *iso)), 5), "miss_per_s1": round(miss, 5)}
     log(f"calibration {calib}", t0)
 
@@ -260,8 +270,14 @@ def tune(name: str, owner_model: bool = False) -> bool:
     # final evaluation of the chosen setting, the baselines and the V7/V8 checks
     sl = slices(u, rec)
     feats_f, cand_f = S5W / name / "features.parquet", S4W / name / "pairs.parquet"
-    feats = pl.read_parquet(feats_f, columns=["s1", "rec", "name_jaccard", "addr_jaccard"]) if feats_f.exists() else None
-    cands = pl.read_parquet(cand_f, columns=["s1", "rec"]) if cand_f.exists() else None
+    b0_all = None
+    if feats_f.exists():  # B0 reads every candidate (not the p pre-filter): J >= 0.5 on name and address
+        b0_all = (pl.scan_parquet(feats_f).select("s1", "rec", "name_jaccard", "addr_jaccard")
+                  .filter((pl.col("name_jaccard") >= 0.5) & (pl.col("addr_jaccard") >= 0.5))
+                  .join(u.lazy().select("s1"), on="s1", how="semi").collect()
+                  .join(rec.select("rec", "owner"), on="rec", how="left")
+                  .with_columns(label=(pl.col("owner") == pl.col("s1")).fill_null(False),
+                                p=pl.col("name_jaccard") + pl.col("addr_jaccard")).drop("owner"))
     off = robust(grids, [k for k in keys if k[0] is None])
     res, v7 = {}, {}
     for w in WORLDS:
@@ -274,21 +290,21 @@ def tune(name: str, owner_model: bool = False) -> bool:
         first = chosen.filter(pl.col("r") == 0)
         r = {"macro_f05": round(float(f.mean()), 5),
              "empty_baseline": round(float((k == 0).mean()), 5),
-             "oracle_candidates": round(float(world.evaluate(world.pairs.filter("label"))[0].mean()), 5),
+             "oracle_candidates": oracle(qs, positives.join(indexed(rec, w).select("rec"), on="rec", how="semi"), k),
              "ownership_off_best": round(grids[w][off], 5),
              "singleton_accuracy": round(float((n[k == 0] == 0).mean()), 5) if (k == 0).any() else None,
              "top1_precision": round(float(first["label"].mean()), 5) if first.height else None,
              "nonsingleton_empty_rate": round(float((n[k > 0] == 0).mean()), 5),
              "mean_predicted": round(float(n.mean()), 4),
              "slices": slice_report(sl, world.s1, f)}
-        if feats is not None:  # B0: name J >= 0.5 and address J >= 0.5 among the candidates, then ownership (V8.3)
-            b0 = (feats.join(data[w].select("s1", "rec", "label"), on=["s1", "rec"])
-                  .filter((pl.col("name_jaccard") >= 0.5) & (pl.col("addr_jaccard") >= 0.5))
-                  .with_columns(p=pl.col("name_jaccard") + pl.col("addr_jaccard")))
+        if b0_all is not None:  # B0: name J >= 0.5 and address J >= 0.5 among the candidates, then ownership (V8.3)
+            b0 = b0_all.join(qs.select("s1"), on="s1", how="semi").join(indexed(rec, w).select("rec"), on="rec", how="semi")
             bw = World(qs, own(b0, 0.0))
             r["B0_rule"] = round(float(bw.evaluate(bw.pairs)[0].mean()), 5)
-        if cands is not None:
-            r["final_not_in_candidates"] = chosen.select("s1", "rec").join(cands, on=["s1", "rec"], how="anti").height
+        if cand_f.exists():
+            r["final_not_in_candidates"] = (chosen.lazy().select("s1", "rec")
+                                            .join(pl.scan_parquet(cand_f).select("s1", "rec"), on=["s1", "rec"], how="anti")
+                                            .select(pl.len()).collect().item())
         res[w] = r
         w0 = World(qs, own(data[w], 0.0))
         v7[w] = own_checks(data[w], owned) | {"f05_delta0": round(float(w0.evaluate(
@@ -341,7 +357,7 @@ def apply(name: str, tuned: str, tau2: float | None = None, france_tau2: float |
     t0 = time.time()
     th = json.loads((S8W / tuned / "thresholds.json").read_text())
     assert th.get("owner_model", False) == owner_model, f"{tuned} was tuned with owner_model={th.get('owner_model', False)}"
-    sc = pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p"])
+    sc = prefilter(pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p"]))
     sc = owner_q(sc, name) if owner_model else sc
     probing = tau2 is not None or france_tau2 is not None
     rule = "two_threshold" if probing else th["rule"]  # probes are two-threshold by definition (G7/G10)

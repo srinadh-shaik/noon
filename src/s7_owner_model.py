@@ -24,6 +24,7 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).parent))
 from gates import set_gate  # noqa: E402
 from s0_harness import ROOT, WORLDS  # noqa: E402
+from s7_ownership import prefilter  # noqa: E402  same pair set as s8_decide (p >= FLOOR + runner-ups)
 
 S5W, S6W, S7W, S8W = (ROOT / f"work/{s}" for s in ("s5", "s6", "s7", "s8"))
 S5_COLS = ["v1_n_claims", "v2_n_claims", "v1_gap_to_best", "v2_gap_to_best"]  # joined only if Stage 5 wrote them
@@ -84,7 +85,7 @@ def oof(df: pl.DataFrame, cols: list[str]) -> np.ndarray:
 
 
 def fit(name: str) -> None:
-    df = features(pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p", "label", "fold"]),
+    df = features(prefilter(pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p", "label", "fold"])),
                   S5W / name / "features.parquet")
     cols = feature_cols(df)
     print(f"{df.height:,} claims, features {cols}", flush=True)
@@ -99,7 +100,7 @@ def fit(name: str) -> None:
 
 def predict(name: str, train_name: str) -> None:
     m = lgb.Booster(model_file=str(S7W / train_name / "owner_model.txt"))
-    df = features(pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p"]), S5W / name / "features.parquet")
+    df = features(prefilter(pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p"])), S5W / name / "features.parquet")
     miss = set(m.feature_name()) - set(df.columns)
     assert not miss, f"{name} lacks features the {train_name} model uses: {miss}"
     (S7W / name).mkdir(parents=True, exist_ok=True)
