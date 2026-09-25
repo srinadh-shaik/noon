@@ -31,6 +31,9 @@ def view_text(df: pl.DataFrame, view: str) -> list[str]:
     return df["addr_clean"].to_list()
 
 
+REV_K = 20        # reverse list per record (user decision 2026-09-25: 5 -> 20)
+
+
 def vectorizer() -> TfidfVectorizer:
     return TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 3), sublinear_tf=True, dtype=np.float32, min_df=2)
 
@@ -115,9 +118,9 @@ def score_curve(found: pl.DataFrame, truth: pl.DataFrame, sample: pl.DataFrame, 
     for (view, direction), g in found.group_by("view", "direction"):
         for k in (REV_KS if direction == "rev" else KS if direction == "fwd" else (1,)):
             add(view, direction, k, g.filter(pl.col("rank") <= k).select("s1", "rec", hit=pl.lit(True)))
-    for k in KS:  # union of every view and direction, forward at K, reverse at min(k, 5), key always
+    for k in KS:  # union of every view and direction: forward at K, reverse at REV_K, street key always
         u = found.filter(((pl.col("direction") == "fwd") & (pl.col("rank") <= k))
-                         | ((pl.col("direction") == "rev") & (pl.col("rank") <= min(k, 5))) | (pl.col("view") == "V3"))
+                         | ((pl.col("direction") == "rev") & (pl.col("rank") <= REV_K)) | (pl.col("view") == "V3"))
         add("union", "all", k, u.select("s1", "rec", hit=pl.lit(True)))
         if k == 50:  # V3.3: pairs found by one view only
             per = u.group_by("s1", "rec").agg(views=pl.col("view").unique())
