@@ -603,6 +603,10 @@ A wrong ID adds **1** to the bottom; a missed ID adds only **0.25**. Example wit
 4. **Unit checks** (fixed input → exact output) live as small `assert`-based tests next to the code. They run in seconds and must pass before any full-data run.
 5. **Re-verify downstream after any change.** Changing stage N means re-running the checks for N and every stage after it (see the re-tuning rule in C1).
 6. **"Better" means ε:** a gain of **≥ +0.002 macro F0.5** in World A **and** World B′, and no loss worse than −0.001 in World B. Anything smaller is noise, and the simpler option wins.
+7. **Named examples are illustrations, not targets** (decision 2026-09-25). Words, pairs and strings listed inside a check (for example `calcutta↔kolkata`, `township` in V2.4) show what the check means. They may be stale or wrong, and a check passes on its **intent**, judged on data.
+   - Fix the **general mechanism** once. Never special-case, hand-list or tune thresholds to make one named example appear.
+   - If the mechanism works but a named example is still missed, record the miss with its **measured impact**: the share of pairs affected, and whether it can flip a match. Then move on.
+   - A HARD check that fails **only** on a negligible named example doesn't block the next stage. Flag it in the report, and let the architect decide whether the check stays HARD.
 
 ---
 
