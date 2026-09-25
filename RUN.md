@@ -83,20 +83,26 @@ before applying. Old thresholds never carry over.
 
 ## 4. AWS
 
-- **Instance:** `g5.8xlarge` or `g6.8xlarge` (32 vCPU, 128 GB RAM, one 24 GB GPU). A CUDA GPU is
-  **required**: Stage 4 runs the TF-IDF search on GPU (`search_gpu`). Memory peaks in `s4_candidates.py full`
-  (~90M forward + ~300M reverse rows held at once, ≥ 64 GB); `s8_decide.py tune full` needs ~22 GB.
-  A 64 GB box (`g5.4xlarge`) may work but has no headroom. Use ≥ 200 GB gp3 disk.
+- **Instance:** SageMaker **notebook instance** `ml.g6e.8xlarge` (32 vCPU, 256 GiB RAM, 1× L40S 48 GB),
+  **300 GB volume**, no VPC (direct internet for pip/git/model downloads), root access on. Measured sizing
+  (real-record probe at 166k/667k pairs, extrapolated): Stage 5 ≈ 7.4 GB + 1.3 KB/pair and Stage 6 train
+  both bounded by chunking (`CHUNK_PAIRS`, `PRED_ROWS`, `TRAIN_S1`); Stage 4 holds its reverse lists
+  (~40-60 GB at full train); `s8_decide.py tune full` pre-filters p < 0.02. A CUDA GPU is **required**
+  (Stage 4 `search_gpu`). The 48 GB GPU leaves room for up-to-8B Apache/MIT models (G4/G9 upgrades).
+- **Only `/home/ec2-user/SageMaker` survives a stop/start**: repo, `.venv`, data and caches all live there.
 - `s3_retrieve.py curve` (step 4, ~20 min CPU) is the recall report (V3.1); Stage 4 does its own search.
-- **Setup:**
+- **Setup** (JupyterLab → Terminal):
   ```bash
-  git clone <repo> noon && cd noon          # or unzip code/business_entity_resolution/
+  cd /home/ec2-user/SageMaker
+  export TMPDIR=$PWD/tmp HF_HOME=$PWD/.cache/huggingface UV_CACHE_DIR=$PWD/.cache/uv && mkdir -p $TMPDIR
+  git clone -b epsilons_work https://github.com/<owner>/noon.git && cd noon   # private repo: token as password
   mkdir -p data/6ab10eb3b23ba_student_resource
   aws s3 cp --recursive s3://<bucket>/student_resource data/6ab10eb3b23ba_student_resource/student_resource
-  # or: rsync -a student_resource/ ec2-user@<host>:noon/data/6ab10eb3b23ba_student_resource/student_resource/
-  curl -LsSf https://astral.sh/uv/install.sh | sh    # then section 2
-  nohup bash run_all.sh > run.log 2>&1 &             # tail -f run.log
+  curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env    # then section 2
+  sudo yum install -y tmux && tmux new -s run
+  bash run_all.sh 2>&1 | tee run.log      # detach: Ctrl-b d · reattach: tmux attach -t run
   ```
+- **Cost:** ~$6/h while running — stop the instance when a run ends.
 - **Artefacts:** `output/matching_results.tsv`, `output/candidate_pairs.tsv` (one row per
   test S1, 1,732,544 rows each); intermediate stages in `work/`; checks in `reports/`
   (`verify_stage*.json`, `verify_summary.md`, `recall_curve.csv`, `gates.md`). Copy back:
