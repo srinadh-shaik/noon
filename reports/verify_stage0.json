@@ -1,0 +1,108 @@
+[
+ {
+  "id": "V0.1",
+  "value": 0.7143,
+  "expected": "0.714 \u00b1 0.001",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.2",
+  "value": 1.0,
+  "expected": "1.000",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.3",
+  "value": 0.055848,
+  "expected": "0.0558 (= singleton rate)",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.4",
+  "value": {
+   "singleton+pred": 0.0,
+   "singleton+empty": 1.0,
+   "nonsingleton+empty": 0.0
+  },
+  "expected": "0 / 1 / 0",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.5",
+  "value": {
+   "train/train_source1.tsv": 2206821,
+   "train/train_source2.tsv": 5034616,
+   "train/train_source3.tsv": 5285603,
+   "train/train_ground_truth.tsv": 2206821,
+   "test/test_source1.tsv": 1732544,
+   "test/test_source2.tsv": 4887273,
+   "test/test_source3.tsv": 5082316
+  },
+  "expected": "exact row counts",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.6",
+  "value": {
+   "all_str": true,
+   "dups": 0
+  },
+  "expected": "ids are strings, 0 duplicates",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.7",
+  "value": {
+   "ids": 7638365,
+   "max_owners": 1,
+   "unknown": 0
+  },
+  "expected": "7,638,365 ids, max owners 1, 0 unknown",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.8",
+  "value": {
+   "s1_unique": true,
+   "fold_range_ok": true,
+   "owned_off_fold": 0,
+   "max_fold_size_dev": 0.00174
+  },
+  "expected": "each S1 one fold, owned records in owner's fold, sizes within \u00b11%",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.9",
+  "value": 5.845,
+  "expected": "5.8 \u00b1 0.1",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.10",
+  "value": {
+   "density": 5.79,
+   "sibling_share": 0.00142,
+   "anchor_owned_A": 0.19231,
+   "anchor_decoy_A": 0.00202
+  },
+  "expected": "5.8 \u00b1 0.1; sibling share < 1%",
+  "pass": true,
+  "level": "HARD"
+ },
+ {
+  "id": "V0.11",
+  "value": true,
+  "expected": "identical file hashes",
+  "pass": true,
+  "level": "HARD"
+ }
+]
