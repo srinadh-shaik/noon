@@ -1,7 +1,8 @@
 """Stage 4 — CANDIDATES: union of the Stage 3 views for a set of S1, with provenance and competition.
 
 Usage:
-  python src/s4_candidates.py subset    # 50k train S1 (folds 1-4) -> work/s4/subset/{pairs,reverse}.parquet
+  python src/s4_candidates.py subset|full|test   # subset = 50k train S1 (folds 1-4); full = all train S1;
+                                                 # test = all test S1 -> work/s4/MODE/{s1,pairs,reverse}.parquet
 
 pairs.parquet   one row per (s1, rec): forward/reverse rank and score per view, street-key flag
 reverse.parquet every candidate record's reverse top-20 over ALL S1 of its country (the competition it faces)
@@ -32,6 +33,7 @@ def subset_s1() -> pl.DataFrame:
 def candidates(split: str, s1_ids: pl.DataFrame, out: Path) -> None:
     t0 = time.time()
     out.mkdir(parents=True, exist_ok=True)
+    s1_ids.select("s1").write_parquet(out / "s1.parquet")  # the query set, incl. S1 that get no candidate
     s1_scan = pl.scan_parquet(S1W / f"{split}_source1.parquet").select(COLS)
     recs_scan = pl.scan_parquet([S1W / f"{split}_source{n}.parquet" for n in (2, 3)]).select(COLS)
     fwd, rev = [], []
@@ -77,8 +79,17 @@ def candidates(split: str, s1_ids: pl.DataFrame, out: Path) -> None:
     log(f"{pairs.height:,} candidate pairs for {s1_ids.height:,} S1 ({pairs.height / s1_ids.height:.1f} per S1)", t0)
 
 
+def all_s1(split: str) -> pl.DataFrame:
+    return pl.read_parquet(S1W / f"{split}_source1.parquet", columns=["entity_id"]).rename({"entity_id": "s1"})
+
+
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["subset"]:
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode == "subset":
         candidates("train", subset_s1(), S4W / "subset")
+    elif mode == "full":   # World A: every train S1 (needs a large-RAM box; ~64 GB)
+        candidates("train", all_s1("train"), S4W / "full")
+    elif mode == "test":
+        candidates("test", all_s1("test"), S4W / "test")
     else:
         sys.exit(__doc__)

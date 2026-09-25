@@ -1,6 +1,15 @@
+# CUDA build of torch (Blackwell GPUs need cu128+):
+#   uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
 numpy==2.5.3
 polars==1.44.2
 pyarrow==25.0.1
 scikit-learn==1.9.1
 scipy==1.18.1
 sparse-dot-topn==1.2.0
+lightgbm==4.7.0
+rapidfuzz==3.14.6
+torch==2.11.0
+sentence-transformers==6.1.0
+transformers==5.17.0
+datasets==5.0.1
+accelerate==1.15.0

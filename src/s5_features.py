@@ -1,7 +1,8 @@
 """Stage 5 — EVIDENCE: features per candidate pair (archi.md F1-F8), using the Stage 1 fields and Stage 2 tables.
 
 Usage:
-  python src/s5_features.py subset     # work/s4/subset/pairs.parquet -> work/s5/subset/features.parquet
+  python src/s5_features.py subset|full|test   # work/s4/MODE/pairs.parquet -> work/s5/MODE/features.parquet
+                                               # (test: no label/fold columns)
 No feature encodes the country or the source file name (V5.2); counts come from the pair's own split.
 """
 import sys
@@ -156,7 +157,8 @@ def features(split: str, name: str) -> None:
 
 
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["subset"]:
-        features("train", "subset")
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode in ("subset", "full", "test"):
+        features("test" if mode == "test" else "train", mode)
     else:
         sys.exit(__doc__)

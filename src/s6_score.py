@@ -1,7 +1,8 @@
 """Stage 6 — SCORE: LightGBM P(match) per candidate pair, 5-fold out-of-fold grouped by S1 (Stage 0 folds).
 
 Usage:
-  python src/s6_score.py subset    # work/s5/subset/features.parquet -> work/s6/subset/scores.parquet (+ report)
+  python src/s6_score.py subset|full   # OOF [s1, rec, label, fold, p] + 5 fold models -> work/s6/MODE/
+  python src/s6_score.py test          # [s1, rec, p]: mean of work/s6/full's fold models (OOF scale)
 """
 import json
 import sys
@@ -54,6 +55,8 @@ def score(name: str) -> None:
                       num_boost_round=3000, valid_sets=[lgb.Dataset(x[va], y[va], categorical_feature=["num_rel"])],
                       callbacks=[lgb.early_stopping(100, verbose=False)])
         oof[va] = m.predict(x[va], num_iteration=m.best_iteration)
+        (S6W / name).mkdir(parents=True, exist_ok=True)
+        m.save_model(str(S6W / name / f"model_fold{k}.txt"), num_iteration=m.best_iteration)
         rounds.append(m.best_iteration)
         gain += m.feature_importance("gain")
         log(f"fold {k}: {m.best_iteration} rounds, AUC {auc(y[va], oof[va]):.5f}", t0)
@@ -73,8 +76,25 @@ def score(name: str) -> None:
     log("top features: " + ", ".join(f"{c} {g:.3f}" for c, g in top), t0)
 
 
+def predict(model_from: str, name: str) -> None:
+    """Score unlabelled pairs with the mean of the 5 fold models: the same scale as the OOF p the thresholds saw."""
+    t0 = time.time()
+    df = pl.read_parquet(S5W / name / "features.parquet")
+    models = [lgb.Booster(model_file=str(f)) for f in sorted((S6W / model_from).glob("model_fold*.txt"))]
+    assert models, f"no fold models in work/s6/{model_from}"
+    cols = models[0].feature_name()
+    x = df.select(pl.col(cols).cast(pl.Float32)).to_numpy()  # same columns, same order as training
+    p = np.mean([m.predict(x) for m in models], axis=0)
+    (S6W / name).mkdir(parents=True, exist_ok=True)
+    df.select("s1", "rec").with_columns(p=pl.Series(p)).write_parquet(S6W / name / "scores.parquet")
+    log(f"{len(p):,} pairs scored with {len(models)} fold models from work/s6/{model_from}", t0)
+
+
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["subset"]:
-        score("subset")
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode in ("subset", "full"):
+        score(mode)
+    elif mode == "test":
+        predict("full", "test")
     else:
         sys.exit(__doc__)
