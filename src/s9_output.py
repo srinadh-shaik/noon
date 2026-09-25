@@ -102,7 +102,8 @@ def write(name: str, test_dir: Path = Path("dataset/test"), out: Path = OUT, wor
     hashes = {f: sha256(p) for f, p in files.items()}
     old = {f: prev.get("V9.4", {}).get(f) for f in HEADS}
     status = "first run, rerun to confirm" if not any(old.values()) else "identical" if old == hashes else "changed"
-    check("V9.4", {**hashes, "status": status}, "identical to the previous run's hashes", status == "identical")
+    # a first run is pending, not failing; `package` demands "identical" (rerun `FROM=16 bash run_all.sh` first)
+    check("V9.4", {**hashes, "status": status}, "identical to the previous run's hashes", status != "changed")
 
     if check_ids:
         ids = validate(files, test_dir, "--check-ids")
@@ -136,7 +137,8 @@ def scan(src: Path) -> list[str]:
 def package(team: str) -> Path:
     v9 = REPORTS / "verify_stage9.json"
     assert v9.exists(), "no reports/verify_stage9.json: run `s9_output.py write test` first"
-    bad = [c["id"] for c in json.loads(v9.read_text()) if c["level"] == "HARD" and not c["pass"]]
+    bad = [c["id"] for c in json.loads(v9.read_text()) if c["level"] == "HARD" and
+           not (c["pass"] and (c["id"] != "V9.4" or c["value"]["status"] == "identical"))]
     assert not bad, f"Stage 9 HARD check(s) failing: {bad} (V9.4 needs a rerun with identical files)"
     hits = scan(ROOT / "src")
     print("\n".join(["D4 compliance scan hits:", *hits]) if hits else "D4 compliance scan: 0 hits")

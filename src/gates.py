@@ -16,7 +16,8 @@ def set_gate(gid: str, verdict: str, evidence: str) -> None:
     path = REPORTS / "gates.md"
     rows = {g: f"| {g} | {q} | ⏳ open | |" for g, q in GATES.items()}
     if path.exists():
-        rows |= {ln.split("|")[1].strip(): ln for ln in path.read_text().splitlines() if ln.startswith("| G")}
+        rows |= {ln.split("|")[1].strip(): ln for ln in path.read_text().splitlines()
+                 if ln.startswith("| G") and ln.split("|")[1].strip() in GATES}  # not the "| Gate |" header
     rows[gid] = f"| {gid} | {GATES[gid]} | {verdict} | {evidence} |"
     REPORTS.mkdir(exist_ok=True)
     path.write_text(HEAD + "\n".join(rows[g] for g in sorted(rows, key=lambda g: int(g[1:]))) + "\n")

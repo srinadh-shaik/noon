@@ -1,8 +1,12 @@
 """Run: .venv/bin/python src/test_s78.py   (Stages 7-8 unit checks, seconds)"""
 import itertools
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import polars as pl
+
+import gates
 
 from s0_harness import indexed, queries, score
 from s7_ownership import checks, own
@@ -11,14 +15,16 @@ from test_s0_harness import toy
 
 
 def brute_len(row: np.ndarray, miss: float) -> int:
-    """Expected-F0.5 prefix length by enumerating every outcome."""
+    """Expected-F0.5 prefix length by enumerating every outcome (+ h ~ Poisson(miss) hidden copies, h < 12)."""
     m, best = len(row), []
+    pois = [np.exp(-miss) * miss ** h / np.prod(np.arange(1, h + 1)) for h in range(12)]
     for n in range(m + 1):
         e = 0.0
         for o in itertools.product((0, 1), repeat=m):
             pr = np.prod([row[j] if o[j] else 1 - row[j] for j in range(m)])
             c, r = sum(o[:n]), sum(o[n:])
-            e += pr * (1.25 * c / (n + 0.25 * (c + r + miss)) if n else (r == 0) * np.exp(-miss))
+            e += pr * sum(ph * (1.25 * c / (n + 0.25 * (c + r + h)) if n else float(r + h == 0))
+                          for h, ph in enumerate(pois))
         best.append(e)
     return int(np.argmax(best))
 
@@ -30,6 +36,8 @@ def test():
     assert own(df, 0.05).select("s1", "rec").sort("rec").rows() == [("a", "r1"), ("c", "r3")]  # r2: 0.60 vs 0.58 abstains
     tie = pl.DataFrame({"s1": ["b", "a"], "rec": ["r", "r"], "p": [0.7, 0.7]})
     assert own(tie, 0.0)["s1"].to_list() == ["a"] and own(tie, 0.01).is_empty()  # deterministic tie-break / abstain
+    lone = pl.DataFrame({"s1": ["a"], "rec": ["r"], "p": [0.05]})
+    assert own(lone, 0.1).height == 1  # delta is a margin over a rival, not an absolute floor
     assert own(df, None).height == df.height
     ck = checks(df, own(df, 0.05))
     assert ck["max_owners"] == 1 and ck["pairs_not_in_input"] == 0 and ck["q_above_p"] == 0 and abs(ck["abstain_rate"] - 1 / 3) < 1e-4
@@ -62,6 +70,12 @@ def test():
         assert (got == want).all(), (miss, np.flatnonzero(got != want)[:5])
     assert expected_len(np.zeros((1, 4)), 0.0)[0] == 0  # nothing plausible -> empty
     assert expected_len(np.array([[0.99, 0.98, 0.97, 0.0]]), 0.0)[0] == 3
+    # gates.md: a second set_gate re-reads the file (its "| Gate |" header row is not a gate)
+    gates.REPORTS = Path(tempfile.mkdtemp())
+    gates.set_gate("G11", "a", "x")
+    gates.set_gate("G6", "b", "y")
+    rows = [ln for ln in (gates.REPORTS / "gates.md").read_text().splitlines() if ln.startswith("| G")]
+    assert len(rows) == 1 + len(gates.GATES) and "| G11 | " in rows[11] and "| b | y |" in rows[6], rows
     print("ok")
 
 

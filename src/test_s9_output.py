@@ -35,9 +35,9 @@ def test():
     put(work, "s8", [("S1-1", "S3-20"), ("S1-1", "S2-10")])
 
     kw = dict(test_dir=data, out=out, work=work, reports=rep)
-    assert not write("t", **kw)  # first run: only V9.4 fails ("rerun to confirm")
+    assert write("t", **kw)  # first run: V9.4 is pending (not failing); package still refuses until a rerun
     checks = {c["id"]: c for c in json.loads((rep / "verify_stage9.json").read_text())}
-    assert [i for i, c in checks.items() if not c["pass"]] == ["V9.4", "V9.5"], checks
+    assert [i for i, c in checks.items() if not c["pass"]] == ["V9.5"], checks
     assert checks["V9.4"]["value"]["status"] == "first run, rerun to confirm"
     assert write("t", **kw)  # rerun: identical hashes -> all HARD pass
     assert json.loads((rep / "verify_stage9.json").read_text())[3]["value"]["status"] == "identical"

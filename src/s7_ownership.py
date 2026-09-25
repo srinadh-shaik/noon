@@ -18,9 +18,9 @@ def own(df: pl.DataFrame, delta: float | None) -> pl.DataFrame:
     if delta is None:
         return df.with_columns(q=pl.col("p"))
     df = df.sort("rec", "p", "s1", descending=[False, True, False])
-    second = pl.col("p").shift(-1).over("rec").fill_null(0.0)  # rows are p-sorted inside each rec
+    second = pl.col("p").shift(-1).over("rec")  # rows are p-sorted inside each rec; null = no rival claim
     return (df.with_columns(_lead=pl.col("p") - second)
-            .filter(pl.col("rec").is_first_distinct() & (pl.col("_lead") >= delta))
+            .filter(pl.col("rec").is_first_distinct() & (pl.col("_lead").is_null() | (pl.col("_lead") >= delta)))
             .drop("_lead").with_columns(q=pl.col("p")))
 
 

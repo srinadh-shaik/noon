@@ -36,7 +36,7 @@ for t in src/test_*.py; do .venv/bin/python "$t"; done
 ## 3. Run
 
 ```bash
-bash run_all.sh                 # all 14 steps, prints wall-clock per step
+bash run_all.sh                 # all 18 steps, prints wall-clock per step
 FROM=9 bash run_all.sh          # resume from step 9 (artefacts of steps 1–8 are reused)
 PY=/path/to/python bash run_all.sh
 ```
@@ -50,24 +50,31 @@ PY=/path/to/python bash run_all.sh
 | 5–6 | `s4_candidates.py full` / `test` | `work/s4/{full,test}/pairs.parquet` |
 | 7–8 | `s5_features.py full` / `test` | `work/s5/{full,test}/` |
 | 9–10 | `s6_score.py full` / `test` | `work/s6/{full,test}/scores.parquet` (OOF on train) |
-| 11 | `s8_decide.py tune full` | thresholds tuned on OOF in Worlds A/B/B′ |
-| 12 | `s8_decide.py apply test full` | `work/s8/test/final.parquet` |
-| 13 | `s9_output.py write test` | `output/*.tsv` + official validator |
-| 14 | `s9_output.py summary` | `reports/verify_summary.md` |
+| 11–12 | `s7_owner_model.py fit full` / `predict test full` | G5 owner-or-none q: `work/s7/{full,test}/owner_q.parquet` |
+| 13 | `s8_decide.py tune full --owner-model` | G5 candidate thresholds: `work/s8/full_owner/` |
+| 14 | `s8_decide.py tune full` | thresholds tuned on OOF in Worlds A/B/B′ (δ, τ₁, τ₂, G6, G11) + V7/V8 reports |
+| 15 | `s7_owner_model.py gate full` | G5 verdict in `reports/gates.md` |
+| 16 | `s8_decide.py apply test full` (or `full_owner --owner-model` if G5 kept) | `work/s8/test/final.parquet` |
+| 17 | `s9_output.py write test` | `output/*.tsv` + official validator |
+| 18 | `s9_output.py summary` | `reports/verify_summary.md` |
 
 Every stage writes `reports/verify_stage<N>.json` and exits non-zero when a HARD check
 fails, which stops `run_all.sh`.
 
-**V9.4 (reproducibility)** passes only when the output hashes equal those of the previous
-run. The first run ends at step 13 with `first run, rerun to confirm`. Rerun the whole
-pipeline (`bash run_all.sh`) and V9.4 turns `identical`. `FROM=13 bash run_all.sh` only
-re-checks the writer.
+**V9.4 (reproducibility):** the first run records the output hashes as `first run, rerun to
+confirm` (pending, not failing). `package` refuses until a rerun gives `identical`:
+`FROM=16 bash run_all.sh` (minutes) re-derives the final lists and files; a full clean
+rerun (`bash run_all.sh` from a fresh checkout) is the strict release check (D4).
+
+**Leaderboard probes (G7, G10),** two-threshold rule, same model:
+`s8_decide.py apply test full --tau2 <X>` with X = `probe.tau2_A` (P1) or `probe.tau2_Bp` (P2)
+from `work/s8/full/thresholds.json`; P3 adds `--france-tau2 <stricter>`. Then `s9_output.py write test`.
 
 Optional ID-existence check (a few GB of RAM): `python src/s9_output.py write test --check-ids` (V9.5).
 Package: `python src/s9_output.py package TEAM` → `TEAM_submission.zip` (refuses if a Stage 9
 HARD check fails or the no-network scan finds a hit).
 
-**Rule:** if anything in Stages 1–6 changes, re-run `s8_decide.py tune full` (step 11)
+**Rule:** if anything in Stages 1–6 changes, re-run steps 11–15 (G5 model + `s8_decide.py tune full`)
 before applying. Old thresholds never carry over.
 
 ## 4. AWS

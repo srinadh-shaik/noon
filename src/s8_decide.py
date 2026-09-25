@@ -3,7 +3,9 @@
 Usage:
   python src/s8_decide.py tune NAME          # work/s6/NAME/scores.parquet (train OOF) -> work/s8/NAME/{thresholds.json,
                                              #   grid.parquet} + reports/verify_stage7.json, verify_stage8.json, gates.md
-  python src/s8_decide.py apply NAME TUNED [--tau2 X] [--france-tau2 Y]
+  python src/s8_decide.py tune NAME --owner-model   # G5: p <- q of work/s7/NAME/owner_q.parquet; writes work/s8/NAME_owner/
+                                             #   (apply then needs TUNED=NAME_owner and --owner-model too)
+  python src/s8_decide.py apply NAME TUNED [--tau2 X] [--france-tau2 Y] [--owner-model]
                                              # work/s6/NAME/scores.parquet + work/s8/TUNED/thresholds.json
                                              #   -> work/s7/NAME/owned.parquet, work/s8/NAME/final.parquet [s1, rec]
                                              #   --tau2 / --france-tau2: leaderboard probes P1-P3 (gates G7, G10) only
@@ -35,6 +37,13 @@ DELTA = (None, 0.0, 0.05, 0.1, 0.2)  # None = ownership off (the V7.3 control)
 EPS_GAIN, EPS_LOSS = 0.002, 0.001  # archi.md D0.6
 M = 16  # the expected-F0.5 rule looks at each S1's top-M owned candidates
 # ponytail: candidates past rank M are ignored by the G6 rule (their calibrated p is ~0 after ownership); raise M if not
+
+
+def owner_q(sc: pl.DataFrame, name: str) -> pl.DataFrame:
+    """--owner-model (gate G5): p <- q from work/s7/NAME/owner_q.parquet (src/s7_owner_model.py), before ownership."""
+    sc = sc.drop("p").join(pl.read_parquet(S7W / name / "owner_q.parquet").rename({"q": "p"}), on=["s1", "rec"], how="left")
+    assert sc["p"].null_count() == 0, f"work/s7/{name}/owner_q.parquet misses scored pairs"
+    return sc
 
 
 def log(msg: str, t0: float) -> None:
@@ -76,13 +85,12 @@ def ece(y: np.ndarray, p: np.ndarray, bins: int = 20) -> float:
 def expected_len(q: np.ndarray, miss: float, chunk: int = 20_000) -> np.ndarray:
     """Rows of q = one S1's calibrated candidate probabilities, best first, 0-padded. Returns the prefix length n
     with the highest expected F0.5 = E[1.25c / (n + 0.25k)], exact under independence:
-    c ~ PoissonBinomial(q[:n]) right picks, r ~ PoissonBinomial(q[n:]) true copies left out, k = c + r + miss
-    (miss = copies the candidates never held, added deterministically). Empty answer: P(r = 0) * exp(-miss)."""
-    m = q.shape[1]
-    n, c, r = np.ogrid[: m + 1, : m + 1, : m + 1]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        g = np.where(n > 0, 1.25 * c / (n + 0.25 * (c + r + miss)), ((c == 0) & (r == 0)) * np.exp(-miss))
-    g = np.nan_to_num(g)
+    c ~ PoissonBinomial(q[:n]) right picks; r = true copies left out = PoissonBinomial(q[n:]) + h, where
+    h ~ Poisson(miss) are copies no candidate holds; k = c + r. The empty answer scores 1 only if k = 0."""
+    m, P = q.shape[1], 12  # ponytail: Poisson tail cut at 12 hidden copies; fine while miss << 12
+    pois = np.exp(-miss) * np.cumprod(np.r_[1.0, np.full(P - 1, miss) / np.arange(1, P)])
+    n, c, r = np.ogrid[: m + 1, : m + 1, : m + P]
+    g = np.where(n > 0, 1.25 * c / np.maximum(n + 0.25 * (c + r), 1e-12), (c == 0) & (r == 0))
     out = np.empty(len(q), np.int64)
     for s in range(0, len(q), chunk):
         x = q[s: s + chunk]
@@ -97,7 +105,10 @@ def expected_len(q: np.ndarray, miss: float, chunk: int = 20_000) -> np.ndarray:
             jj = m - 1 - j
             suf[:, jj] = suf[:, jj + 1] * (1 - x[:, jj: jj + 1])
             suf[:, jj, 1:] += suf[:, jj + 1, :-1] * x[:, jj: jj + 1]
-        e = ((pre[:, :, None, :] @ g)[:, :, 0, :] * suf).sum(-1)  # (b, n)
+        left = np.zeros((b, m + 1, m + P))  # suffix hits + Poisson(miss) hidden copies
+        for h in range(P):
+            left[:, :, h: h + m + 1] += pois[h] * suf
+        e = ((pre[:, :, None, :] @ g)[:, :, 0, :] * left).sum(-1)  # (b, n)
         out[s: s + b] = e.argmax(1)
     return out
 
@@ -190,10 +201,12 @@ def git_sha() -> str:
         return "unknown"
 
 
-def tune(name: str) -> bool:
+def tune(name: str, owner_model: bool = False) -> bool:
     t0 = time.time()
+    out = f"{name}_owner" if owner_model else name  # G5 candidate: s7_owner_model.py gate compares the two
     s1_all, rec = load()
     sc = pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p", "label"])
+    sc = owner_q(sc, name) if owner_model else sc
     u = universe(name, s1_all, sc)
     sc = sc.join(u.select("s1"), on="s1", how="semi")
     log(f"{sc.height:,} scored pairs, {u.height:,} query S1", t0)
@@ -223,22 +236,25 @@ def tune(name: str) -> bool:
     keep_margin = best_any[0] != 0.0 and better(at(best_any), at(best0))
     tt = best_any if keep_margin else best0
     set_gate("G11", f"✅ keep δ={tt[0]}" if keep_margin else "❌ plain argmax (δ=0)",
-             f"best worst-case: δ=0 {at(best0)} vs δ={best_any[0]} {at(best_any)} (s8 tune {name} @ {git_sha()})")
+             f"best worst-case: δ=0 {at(best0)} vs δ={best_any[0]} {at(best_any)} (s8 tune {out} @ {git_sha()})")
     dp_delta = max(dp["A"], key=lambda d: min(dp[w][d] for w in WORLDS))
     dp_at = {w: round(dp[w][dp_delta], 5) for w in WORLDS}
     keep_dp = better(dp_at, at(tt))
     set_gate("G6", "✅ keep expected-F0.5 rule" if keep_dp else "❌ two thresholds (simpler)",
-             f"expected-F0.5 (δ={dp_delta}) {dp_at} vs two thresholds {at(tt)} (s8 tune {name} @ {git_sha()})")
+             f"expected-F0.5 (δ={dp_delta}) {dp_at} vs two thresholds {at(tt)} (s8 tune {out} @ {git_sha()})")
     rule, delta = ("expected_f05", dp_delta) if keep_dp else ("two_threshold", tt[0])
     sf = (S6W / name / "scores.parquet").stat()
-    th = {"rule": rule, "delta": delta, "tau1": float(tt[1]), "tau2": float(tt[2]), "M": M, "miss": miss,
-          "iso_x": iso[0], "iso_y": iso[1], "tuned_on": name, "git": git_sha(),
+    # leaderboard probes (G7): P1 = tau2 best in A, P2 = tau2 best in B', both at the chosen delta/tau1, two-threshold rule
+    probe = {f"tau2_{w}": float(max((k for k in keys if k[:2] == tt[:2]), key=lambda k: grids[w][k])[2]) for w in ("A", "Bp")}
+    th = {"rule": rule, "delta": delta, "tt_delta": tt[0], "tau1": float(tt[1]), "tau2": float(tt[2]), "probe": probe,
+          "M": M, "miss": miss,
+          "iso_x": iso[0], "iso_y": iso[1], "tuned_on": name, "owner_model": owner_model, "git": git_sha(),
           "scores_file": {"bytes": sf.st_size, "mtime": sf.st_mtime},
           "chosen_by": "best worst-case macro F0.5 over A/B/Bp on OOF; upgrades need archi.md D0.6 epsilon"}
-    (S8W / name).mkdir(parents=True, exist_ok=True)
-    (S8W / name / "thresholds.json").write_text(json.dumps(th) + "\n")
+    (S8W / out).mkdir(parents=True, exist_ok=True)
+    (S8W / out / "thresholds.json").write_text(json.dumps(th) + "\n")
     pl.DataFrame([{"delta": -1.0 if k[0] is None else k[0], "tau1": k[1], "tau2": k[2], **at(k)} for k in keys]).write_parquet(
-        S8W / name / "grid.parquet")  # delta -1 = ownership off
+        S8W / out / "grid.parquet")  # delta -1 = ownership off
     log(f"chosen: rule={rule} delta={delta} tau1={tt[1]} tau2={tt[2]}", t0)
 
     # final evaluation of the chosen setting, the baselines and the V7/V8 checks
@@ -295,7 +311,7 @@ def tune(name: str) -> bool:
                        "f05_minus_delta0": round(res[w]["macro_f05"] - v7[w]["f05_delta0"], 5)} for w in WORLDS},
           "reported", True, "SOFT")
     s7, checks = checks, []
-    check("V8.1", {"file": str((S8W / name / "thresholds.json").relative_to(ROOT)), "rule": rule, "delta": delta,
+    check("V8.1", {"file": str(S8W / out / "thresholds.json"), "rule": rule, "delta": delta,
                    "tau1": th["tau1"], "tau2": th["tau2"], "tuned_on": f"OOF scores {name}", "git": th["git"]},
           "tuned on OOF only; saved with the model version", True)
     check("V8.2", {w: {"macro_f05": res[w]["macro_f05"], "slices": res[w]["slices"]} for w in WORLDS}, "reported", True)
@@ -311,7 +327,7 @@ def tune(name: str) -> bool:
     REPORTS.mkdir(exist_ok=True)
     (REPORTS / "verify_stage7.json").write_text(json.dumps(s7, indent=1, default=str) + "\n")
     (REPORTS / "verify_stage8.json").write_text(json.dumps(checks, indent=1, default=str) + "\n")
-    (REPORTS / f"stage8_{name}.json").write_text(json.dumps(
+    (REPORTS / f"stage8_{out}.json").write_text(json.dumps(
         {"thresholds": {k: v for k, v in th.items() if not k.startswith("iso")}, "calibration": calib, "worlds": res},
         indent=1, default=str) + "\n")
     hard = [c for c in s7 + checks if c["level"] == "HARD"]
@@ -319,20 +335,26 @@ def tune(name: str) -> bool:
     return all(c["pass"] for c in hard)
 
 
-def apply(name: str, tuned: str, tau2: float | None = None, france_tau2: float | None = None) -> bool:
+def apply(name: str, tuned: str, tau2: float | None = None, france_tau2: float | None = None,
+          owner_model: bool = False) -> bool:
     """Tuned thresholds -> final pairs. tau2 / france_tau2 override only for leaderboard probes (G7 P2, G10 P3)."""
     t0 = time.time()
     th = json.loads((S8W / tuned / "thresholds.json").read_text())
+    assert th.get("owner_model", False) == owner_model, f"{tuned} was tuned with owner_model={th.get('owner_model', False)}"
     sc = pl.read_parquet(S6W / name / "scores.parquet", columns=["s1", "rec", "p"])
-    owned = own(sc, th["delta"])
+    sc = owner_q(sc, name) if owner_model else sc
+    probing = tau2 is not None or france_tau2 is not None
+    rule = "two_threshold" if probing else th["rule"]  # probes are two-threshold by definition (G7/G10)
+    if probing and th["rule"] != rule:
+        print(f"probe: shipped rule is {th['rule']}; probing the two-threshold rule (delta={th.get('tt_delta')})")
+    owned = own(sc, th.get("tt_delta", th["delta"]) if rule == "two_threshold" else th["delta"])
     (S7W / name).mkdir(parents=True, exist_ok=True)
     owned.write_parquet(S7W / name / "owned.parquet")
     split = "test" if name.startswith("test") else "train"
     country = pl.read_parquet(S1W / f"{split}_source1.parquet", columns=["entity_id", "country"]).rename({"entity_id": "s1"})
     s1 = owned["s1"].unique().sort()
     pairs = ranked(owned, s1)
-    if th["rule"] == "expected_f05":
-        assert tau2 is None and france_tau2 is None, "probe overrides apply to the two-threshold rule only"
+    if rule == "expected_f05":
         final = expected_rule(pairs, len(s1), (th["iso_x"], th["iso_y"]), th["miss"])
     else:
         t2 = pl.lit(tau2 if tau2 is not None else th["tau2"])
@@ -352,7 +374,7 @@ def apply(name: str, tuned: str, tau2: float | None = None, france_tau2: float |
     cand_f = S4W / name / "pairs.parquet"
     outside = final.join(pl.read_parquet(cand_f, columns=["s1", "rec"]), on=["s1", "rec"], how="anti").height if cand_f.exists() else None
     max_owners = final.group_by("rec").len()["len"].max() or 0
-    rep = {"thresholds_from": tuned, "rule": th["rule"], "delta": th["delta"], "tau1": th["tau1"],
+    rep = {"thresholds_from": tuned, "rule": rule, "delta": th["delta"], "tau1": th["tau1"],
            "tau2": tau2 if tau2 is not None else th["tau2"], "france_tau2": france_tau2,
            "scored_pairs": sc.height, "owned_pairs": owned.height, "final_pairs": final.height,
            "V8.5_final_not_in_candidates": outside, "V7.1_max_owners": max_owners,
@@ -370,9 +392,11 @@ def flag(args: list[str], name: str) -> float | None:
 
 if __name__ == "__main__":
     a = sys.argv[1:]
+    om = "--owner-model" in a
+    a = [x for x in a if x != "--owner-model"]
     if a[:1] == ["tune"] and len(a) == 2:
-        sys.exit(0 if tune(a[1]) else "Stage 7/8 HARD check failed (see reports/verify_stage7.json, verify_stage8.json)")
+        sys.exit(0 if tune(a[1], om) else "Stage 7/8 HARD check failed (see reports/verify_stage7.json, verify_stage8.json)")
     elif a[:1] == ["apply"] and len(a) >= 3:
-        sys.exit(0 if apply(a[1], a[2], flag(a, "--tau2"), flag(a, "--france-tau2")) else "Stage 8 apply check failed")
+        sys.exit(0 if apply(a[1], a[2], flag(a, "--tau2"), flag(a, "--france-tau2"), om) else "Stage 8 apply check failed")
     else:
         sys.exit(__doc__)
