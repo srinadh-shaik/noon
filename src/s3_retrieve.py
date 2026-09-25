@@ -49,6 +49,26 @@ def search(q, xt, k: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarra
     return np.repeat(np.arange(c.shape[0]), counts), c.indices, rank, c.data
 
 
+def search_gpu(q, x, k: int, score_bytes: float = 1.5e9) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """search() on the GPU, same cosine: the index x stays sparse (CSR) on the device, queries are densified in
+    chunks sized so the (index rows x chunk) score block fits in `score_bytes`. Takes x itself, not x.T."""
+    import torch
+    xg = torch.sparse_csr_tensor(torch.from_numpy(x.indptr).long(), torch.from_numpy(x.indices).long(),
+                                 torch.from_numpy(x.data), size=x.shape, device="cuda")
+    step = max(1, int(score_bytes / 4 / x.shape[0]))
+    out_q, out_x, out_r, out_s = [], [], [], []
+    for a in range(0, q.shape[0], step):
+        qd = torch.from_numpy(q[a:a + step].toarray()).cuda()
+        v, i = (xg @ qd.T).topk(min(k, x.shape[0]), dim=0)          # (k, chunk)
+        v, i = v.T.cpu().numpy(), i.T.cpu().numpy()                 # (chunk, k), best first
+        keep = v > 0                                                # the CPU search returns non-zero scores only
+        out_q.append(np.repeat(np.arange(a, a + len(v)), keep.sum(1)))
+        out_x.append(i[keep])
+        out_r.append((np.cumsum(keep, 1))[keep])
+        out_s.append(v[keep])
+    return tuple(np.concatenate(o) for o in (out_q, out_x, out_r, out_s))
+
+
 def topk(q, x, k: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return search(q, x.T.tocsr(), k)[:3]
 
