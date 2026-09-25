@@ -125,9 +125,10 @@ def fields(ids: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
     return scan("train", ["entity_id", *cols]).join(ids.lazy(), on="entity_id", how="semi").collect()
 
 
-def candidate_pairs(sample: pl.DataFrame) -> pl.DataFrame:
-    """(S1, record) pairs sharing a street key (rare S1 address word + house number), as in DATA_NOTES §9c."""
-    s1df = (scan("train", ["country", "addr_tokens"], sources=(1,)).explode("addr_tokens", empty_as_null=True)
+def candidate_pairs(sample: pl.DataFrame, split: str = "train") -> pl.DataFrame:
+    """(S1, record) pairs sharing a street key (rare S1 address word + house number), as in DATA_NOTES §9c.
+    The S1-df that defines "rare" comes from the same split (test uses test counts)."""
+    s1df = (scan(split, ["country", "addr_tokens"], sources=(1,)).explode("addr_tokens", empty_as_null=True)
             .group_by("country", word="addr_tokens").agg(s1df=pl.len()).collect())
     rare = s1df.filter((pl.col("s1df") <= RARE_DF) & ~pl.col("word").str.contains(NUM)).select("country", "word")
 
@@ -137,9 +138,9 @@ def candidate_pairs(sample: pl.DataFrame) -> pl.DataFrame:
                 .explode("v", empty_as_null=True).drop_nulls("v"))
 
     cols = ["entity_id", "country", "addr_tokens", "numbers"]
-    s1k = keys(scan("train", cols, sources=(1,)).join(
+    s1k = keys(scan(split, cols, sources=(1,)).join(
         sample.lazy().rename({"s1": "entity_id"}), on="entity_id", how="semi")).collect()
-    reck = pl.concat([keys(pl.scan_parquet(S1W / f"train_source{n}.parquet").select(cols))
+    reck = pl.concat([keys(pl.scan_parquet(S1W / f"{split}_source{n}.parquet").select(cols))
                       .join(s1k.lazy(), on=["country", "word", "v"], how="semi").collect(engine="streaming")
                       for n in (2, 3)])
     return s1k.join(reck, on=["country", "word", "v"]).select(s1="entity_id", rec="entity_id_right").unique()
