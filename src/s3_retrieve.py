@@ -53,13 +53,15 @@ def search_gpu(q, x, k: int, score_bytes: float = 1.5e9) -> tuple[np.ndarray, np
     """search() on the GPU, same cosine: the index x stays sparse (CSR) on the device, queries are densified in
     chunks sized so the (index rows x chunk) score block fits in `score_bytes`. Takes x itself, not x.T."""
     import torch
-    xg = torch.sparse_csr_tensor(torch.from_numpy(x.indptr).long(), torch.from_numpy(x.indices).long(),
+    # int32 indices + a contiguous dense operand: ~12x faster cuSPARSE SpMM than int64 / a transposed view
+    assert x.nnz < 2**31, "index too large for int32 CSR"
+    xg = torch.sparse_csr_tensor(torch.from_numpy(x.indptr.astype(np.int32)), torch.from_numpy(x.indices.astype(np.int32)),
                                  torch.from_numpy(x.data), size=x.shape, device="cuda")
     step = max(1, int(score_bytes / 4 / x.shape[0]))
     out_q, out_x, out_r, out_s = [], [], [], []
     for a in range(0, q.shape[0], step):
-        qd = torch.from_numpy(q[a:a + step].toarray()).cuda()
-        v, i = (xg @ qd.T).topk(min(k, x.shape[0]), dim=0)          # (k, chunk)
+        qd = torch.from_numpy(q[a:a + step].toarray().T.copy()).cuda()  # (features, chunk), contiguous
+        v, i = (xg @ qd).topk(min(k, x.shape[0]), dim=0)           # (k, chunk)
         v, i = v.T.cpu().numpy(), i.T.cpu().numpy()                 # (chunk, k), best first
         keep = v > 0                                                # the CPU search returns non-zero scores only
         out_q.append(np.repeat(np.arange(a, a + len(v)), keep.sum(1)))

@@ -5,8 +5,9 @@ Usage:
                                                  # test = all test S1 -> work/s4/MODE/{s1,pairs,reverse}.parquet
 
 pairs.parquet   one row per (s1, rec): forward/reverse rank and score per view, street-key flag
-reverse.parquet every record's reverse top-20 over ALL S1 of its country (the competition it faces); a pair found
-                by the reverse search alone (a query S1 in the record's top-20) is a candidate too (V4.3)
+reverse.parquet every candidate record's reverse top-20 over ALL S1 of its country (the competition it faces)
+Reverse search runs for every record of the country, so a pair found by reverse search alone is a candidate too
+(the recall curve's union counts those pairs; V4.3 holds the Stage 4 ceiling to that curve).
 """
 import sys
 import time
@@ -22,6 +23,11 @@ import s2_knowledge  # noqa: E402
 
 S4W = ROOT / "work/s4"
 N_SUBSET = 50_000
+REV_CHUNK = 200_000  # records per reverse call; hits are filtered per chunk so memory tracks what is kept
+# Depth of a record's reverse list that may ADD a pair no forward view found (user decision: 20).
+# Measured on 300 test-France S1: depth 5 adds ~33 pairs/S1, 10 ~81, 20 ~178 (forward + key ~51);
+# recall curve union@20: rev<=5 India 0.951 / US 0.988, rev<=20 0.967 / 0.993. Competition lists stay top-20.
+REV_ADD_K = 20
 
 
 def subset_s1() -> pl.DataFrame:
@@ -53,13 +59,25 @@ def candidates(split: str, s1_ids: pl.DataFrame, out: Path) -> None:
             log(f"{split}/{country} {view} forward: {q.height:,} S1", t0)
         key = s2_knowledge.candidate_pairs(q.select(s1="entity_id"), split)
         fwd.append(key.with_columns(view=pl.lit("V3"), rank=pl.lit(1, pl.Int32), score=pl.lit(1.0, pl.Float32)))
-        # every record of the country searches back against every S1: the competition it faces, and the pairs
-        # that only the reverse view finds (recall curve: +1.6 pts India @20); accuracy over compute
+        cand_recs = pl.concat([f.select("rec") for f in fwd]).unique()
+        is_cand = r.select(pl.col("entity_id").is_in(cand_recs["rec"].implode())).to_series().to_numpy()
+        is_query = s1c.select(pl.col("entity_id").is_in(q["entity_id"].implode())).to_series().to_numpy()
         for view, (x, s) in index.items():
-            qi, si, rank, sc = search_gpu(x, s, REV_K)
+            # every record of the country searches every S1: a copy whose own top-20 names a query S1 is a
+            # candidate even when no forward view or key found it. Kept: the full list of any record that is a
+            # candidate or names a query S1 (the competition it faces); indices only, ids attached once.
+            keep = []
+            for a in range(0, x.shape[0], REV_CHUNK):
+                qi, si, rank, sc = search_gpu(x[a:a + REV_CHUNK], s, REV_K)
+                qi += a
+                wanted = is_cand[a:a + REV_CHUNK].copy()
+                wanted[qi[is_query[si] & (rank <= REV_ADD_K)] - a] = True
+                m = wanted[qi - a]
+                keep.append((qi[m], si[m], rank[m].astype(np.int32), sc[m]))
+            qi, si, rank, sc = (np.concatenate(c) for c in zip(*keep))
             rev.append(pl.DataFrame({"rec": r["entity_id"].gather(qi), "s1": s1c["entity_id"].gather(si),
-                                     "view": view, "rank": rank.astype(np.int32), "score": sc}))
-            log(f"{split}/{country} {view} reverse: {r.height:,} records", t0)
+                                     "view": view, "rank": rank, "score": sc}))
+            log(f"{split}/{country} {view} reverse: all {x.shape[0]:,} records, kept {len(np.unique(qi)):,}", t0)
         del index
     fwd, rev = pl.concat(fwd), pl.concat(rev)
     rev.write_parquet(out / "reverse.parquet")
@@ -67,7 +85,8 @@ def candidates(split: str, s1_ids: pl.DataFrame, out: Path) -> None:
     wide = lambda df, d: df.filter(pl.col("view") != "V3").pivot(  # noqa: E731
         "view", index=["s1", "rec"], values=["rank", "score"], aggregate_function="min").rename(
         lambda c: c if c in ("s1", "rec") else f"{c.split('_')[-1].lower()}_{d}_{c.split('_')[0]}")
-    pairs = (pl.concat([fwd.select("s1", "rec"), in_subset.select("s1", "rec")]).unique()
+    added = in_subset.filter(pl.col("rank") <= REV_ADD_K)  # reverse-only pairs enter up to this list depth
+    pairs = (pl.concat([fwd.select("s1", "rec"), added.select("s1", "rec")]).unique()
              .join(wide(fwd, "fwd"), on=["s1", "rec"], how="left")
              .join(wide(in_subset, "rev"), on=["s1", "rec"], how="left")
              .join(fwd.filter(pl.col("view") == "V3").select("s1", "rec", key=pl.lit(True)), on=["s1", "rec"],
